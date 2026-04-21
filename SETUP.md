@@ -34,10 +34,30 @@ This installs the full PlatformIO toolchain including ARM GCC, OpenOCD, and ST-L
 **1c. Git**
 Download from https://git-scm.com/download/win — use all defaults during install.
 
-**1d. Python 3 (for post-build scripts and fw_update.py)**
+Verify after install:
+```bash
+git --version
+# expected: git version 2.x.x
+```
+
+**1d. GitHub CLI (`gh`)**
+
+GitHub CLI lets you create repos, open PRs, and authenticate — all from the terminal.
+
+```bash
+winget install --id GitHub.cli --silent --accept-source-agreements --accept-package-agreements
+```
+
+Verify:
+```bash
+gh --version
+# expected: gh version 2.x.x
+```
+
+**1e. Python 3 (for post-build scripts and fw_update.py)**
 Download from https://www.python.org/downloads — check "Add to PATH" during install.
 
-**1e. Install Python dependencies**
+**1f. Install Python dependencies**
 ```bash
 pip install pyserial crcmod
 ```
@@ -47,6 +67,14 @@ pip install pyserial crcmod
 ```bash
 # Git + Python
 sudo apt update && sudo apt install -y git python3 python3-pip
+
+# GitHub CLI
+curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+  | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] \
+  https://cli.github.com/packages stable main" \
+  | sudo tee /etc/apt/sources.list.d/github-cli.list
+sudo apt update && sudo apt install -y gh
 
 # PlatformIO
 pip3 install platformio
@@ -66,10 +94,79 @@ pip3 install pyserial crcmod
 
 ---
 
-## 2. Clone the Repository
+## 2. GitHub Account and Authentication
+
+### 2a. Create a GitHub account
+If you don't have one: https://github.com/signup
+Use your work email. Ask the repo owner (rimesports) to add you as a collaborator:
+**Settings → Collaborators → Add people** → enter your GitHub username.
+
+### 2b. Authenticate GitHub CLI
 
 ```bash
-git clone --recurse-submodules https://github.com/rimesports-sj/Astra_base.git
+gh auth login
+```
+
+Select:
+- **GitHub.com**
+- **HTTPS** (recommended) or SSH
+- **Login with a web browser** → follow the one-time code prompt
+
+Verify authentication:
+```bash
+gh auth status
+# expected: Logged in to github.com account <your-username>
+```
+
+### 2c. Configure Git identity
+
+```bash
+git config --global user.name "Your Name"
+git config --global user.email "your@email.com"
+```
+
+Verify:
+```bash
+git config --global --list
+```
+
+### 2d. (Optional) SSH key setup — faster, no password prompts
+
+```bash
+# Generate key (accept defaults, add a passphrase)
+ssh-keygen -t ed25519 -C "your@email.com"
+
+# Add to ssh-agent
+# Windows:
+Get-Service ssh-agent | Set-Service -StartupType Automatic
+Start-Service ssh-agent
+ssh-add "$HOME\.ssh\id_ed25519"
+
+# Linux/macOS:
+eval "$(ssh-agent -s)"
+ssh-add ~/.ssh/id_ed25519
+
+# Copy public key to GitHub
+gh ssh-key add ~/.ssh/id_ed25519.pub --title "My Dev Machine"
+```
+
+Then re-authenticate with SSH:
+```bash
+gh auth login --git-protocol ssh
+```
+
+**References:**
+- GitHub account signup: https://github.com/signup
+- GitHub CLI docs: https://cli.github.com/manual
+- SSH key guide: https://docs.github.com/en/authentication/connecting-to-github-with-ssh
+- Git setup guide: https://docs.github.com/en/get-started/getting-started-with-git/setting-your-username-in-git
+
+---
+
+## 3. Clone the Repository
+
+```bash
+git clone --recurse-submodules https://github.com/rimesports/Astra_base.git
 cd Astra_base
 ```
 
@@ -82,7 +179,7 @@ git submodule update --init --recursive
 
 ---
 
-## 3. Open in VS Code with PlatformIO
+## 4. Open in VS Code with PlatformIO
 
 ```bash
 code .
@@ -92,7 +189,7 @@ PlatformIO will automatically detect `platformio.ini` and download any missing p
 
 ---
 
-## 4. Wiring — ST-Link to Black Pill
+## 5. Wiring — ST-Link to Black Pill
 
 The Black Pill has no onboard debugger. Connect an external ST-Link V2 to the 4-pad SWD header on the Black Pill board edge:
 
@@ -108,7 +205,7 @@ The Black Pill has no onboard debugger. Connect an external ST-Link V2 to the 4-
 
 ---
 
-## 5. Peripheral Wiring
+## 6. Peripheral Wiring
 
 ### I2C Bus (shared — MPU-6050 and INA219)
 
@@ -167,7 +264,7 @@ The STM32 enumerates as a USB CDC device (`/dev/ttyACM0` on Linux).
 
 ---
 
-## 6. Build the Firmware
+## 7. Build the Firmware
 
 ### VS Code / PlatformIO GUI
 Click the **checkmark (Build)** button in the PlatformIO toolbar at the bottom.
@@ -190,7 +287,7 @@ Flash: [    ]   7.7% (used 39624 bytes from 524288 bytes)
 
 ---
 
-## 7. Flash the Firmware
+## 8. Flash the Firmware
 
 Connect ST-Link V2 to PC via USB, ensure it enumerates (LED should be solid or blinking).
 
@@ -217,7 +314,7 @@ Expected output:
 
 ---
 
-## 8. Open Serial Monitor
+## 9. Open Serial Monitor
 
 ```bash
 # Windows
@@ -231,7 +328,7 @@ Or use PuTTY / screen / minicom at **115200 baud** on the relevant port (`COM5` 
 
 ---
 
-## 9. Verify the Board with T-codes
+## 10. Verify the Board with T-codes
 
 Send these JSON commands in the serial monitor to confirm each subsystem:
 
@@ -272,7 +369,7 @@ Send these JSON commands in the serial monitor to confirm each subsystem:
 
 ---
 
-## 10. Firmware Update from Jetson (OTA)
+## 11. Firmware Update from Jetson (OTA)
 
 Once the bootloader is implemented, firmware updates are sent from the Jetson without ST-Link:
 
@@ -314,6 +411,68 @@ Astra_base/
 ├── BRINGUP.md              # Hardware bring-up procedure
 ├── WIRING.md               # Wiring reference
 └── CONTEXT.md              # Project context and architecture notes
+```
+
+---
+
+## 12. Git Workflow for Contributing
+
+### Day-to-day commands
+
+```bash
+# Check what you've changed
+git status
+git diff
+
+# Stage and commit your work
+git add src/motor_ctrl.cpp src/motor_ctrl.h
+git commit -m "Fix PWM scaling for right motor channel"
+
+# Pull latest changes from team before pushing
+git pull --rebase origin main
+
+# Push your commits
+git push origin main
+```
+
+### Branch workflow (recommended for features/fixes)
+
+```bash
+# Create a branch for your work
+git checkout -b feature/pid-speed-control
+
+# ... make changes, commit ...
+
+# Push branch and open a PR
+git push origin feature/pid-speed-control
+gh pr create --title "Add PID speed control loop" --body "Closes #12"
+
+# After PR is merged, clean up
+git checkout main
+git pull
+git branch -d feature/pid-speed-control
+```
+
+### Keeping the FreeRTOS submodule up to date
+
+```bash
+# Update submodule to latest pinned commit
+git submodule update --remote lib/FreeRTOS/Source
+
+# Commit the submodule pointer update
+git add lib/FreeRTOS/Source
+git commit -m "Update FreeRTOS submodule to latest"
+```
+
+### Useful `gh` commands
+
+```bash
+gh repo view --web                  # Open repo in browser
+gh pr list                          # List open pull requests
+gh pr checkout 12                   # Check out PR #12 locally
+gh issue list                       # List open issues
+gh issue create                     # Create a new issue
+gh release list                     # List releases
 ```
 
 ---
