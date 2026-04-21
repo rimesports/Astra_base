@@ -1,0 +1,25 @@
+{
+  "name": "FreeRTOS-Kernel",
+  "version": "11.1.0",
+  "license": "MIT",
+  "description": "FreeRTOS Kernel — ARM Cortex-M4F port (heap_4). Clone kernel source into lib/FreeRTOS/Source: git clone --depth 1 https://github.com/FreeRTOS/FreeRTOS-Kernel.git lib/FreeRTOS/Source",
+  "frameworks": ["stm32cube"],
+  "platforms": ["ststm32"],
+  "build": {
+    "srcFilter": [
+      "+<Source/*.c>",
+      "+<Source/portable/GCC/ARM_CM4F/port.c>",
+      "+<Source/portable/MemMang/heap_4.c>",
+      "-<Source/portable/MemMang/heap_1.c>",
+      "-<Source/portable/MemMang/heap_2.c>",
+      "-<Source/portable/MemMang/heap_3.c>",
+      "-<Source/portable/MemMang/heap_5.c>"
+    ],
+    "includeDir": "Source/include",
+    "flags": [
+      "-ISource/portable/GCC/ARM_CM4F",
+      "-mfpu=fpv4-sp-d16",
+      "-mfloat-abi=hard"
+    ]
+  }
+}

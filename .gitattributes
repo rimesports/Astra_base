@@ -1,0 +1,17 @@
+# Normalize line endings: LF in repo, OS-native on checkout
+* text=auto
+
+# Force LF for source files (consistent across Windows/Linux dev)
+*.c   text eol=lf
+*.cpp text eol=lf
+*.h   text eol=lf
+*.py  text eol=lf
+*.md  text eol=lf
+*.ini text eol=lf
+*.json text eol=lf
+*.ld  text eol=lf
+
+# Binary files — no line-ending conversion
+*.bin binary
+*.elf binary
+*.hex binary
