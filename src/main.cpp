@@ -28,6 +28,7 @@
 #include "ina219.h"
 #include "serial_cmd.h"
 #include "json_cmd.h"
+#include "pid.h"
 #include "stm32f4xx_hal.h"
 #include "FreeRTOS.h"
 #include "task.h"
@@ -103,10 +104,27 @@ int main(void)
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-//  control_task — priority 9, 10 ms fixed period
+//  control_task — priority 9, CONTROL_PERIOD_MS fixed period
 //
-//  Uses vTaskDelayUntil so the period is exact regardless of how long the
-//  body takes.  This is the real-time spine of the robot.
+//  Velocity PID loop for left and right motors.
+//
+//  T:1 / T:13 commands set target_left / target_right in ±100 units.
+//  These are converted to RPM setpoints (±MOTOR_MAX_RPM), and the PID
+//  closes the loop using encoder_get_left/right_rpm() as the measurement.
+//  The PID output (±100 PWM units) drives motor_ctrl_set_speed().
+//
+//  T:11 (direct PWM) bypasses the PID entirely — useful for open-loop testing.
+//
+//  IMU update:
+//  imu_update() is called here at 50 Hz so the complementary filter runs at
+//  a consistent rate. Telemetry and on-demand queries read the cached values
+//  via imu_get_*() without re-triggering an I2C read.
+//
+//  Yaw-rate correction:
+//  When driving approximately straight (|target_L - target_R| < threshold),
+//  gyro Z (gz_dps) is used to counteract rotation: a positive gz (CCW / left
+//  turn) reduces left PWM and increases right PWM. If the robot corrects the
+//  wrong way, negate YAW_CORRECTION_GAIN in astra_config.h.
 // ═════════════════════════════════════════════════════════════════════════════
 
 static void control_task(void *arg)
@@ -114,36 +132,84 @@ static void control_task(void *arg)
     (void)arg;
     TickType_t last_wake = xTaskGetTickCount();
 
+    static PIDController pid_left;
+    static PIDController pid_right;
+    pid_init(&pid_left,  PID_KP, PID_KI, PID_KD, -100.0f, 100.0f);
+    pid_init(&pid_right, PID_KP, PID_KI, PID_KD, -100.0f, 100.0f);
+
+    const float dt = CONTROL_PERIOD_MS * 0.001f;   // seconds — fixed period for PID
+
     while (1)
     {
         vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(CONTROL_PERIOD_MS));
 
         encoder_update();
+        imu_update();   // complementary filter needs consistent dt; results cached in imu_get_*()
+
+        // Publish fresh IMU state for telemetry task to read
+        g_state.roll      = imu_get_roll();
+        g_state.pitch     = imu_get_pitch();
+        g_state.yaw       = imu_get_yaw();
+        g_state.imu_temp  = imu_get_temp();
 
         uint32_t now = HAL_GetTick();
 
-        // Heartbeat failsafe — stop motors if Jetson goes silent
+        // ── Heartbeat failsafe ───────────────────────────────────────────────
+        // Stop motors and reset PID state if Jetson goes silent.
         if (g_state.command_received &&
             (now - g_state.last_command_ms) > HEARTBEAT_TIMEOUT_MS)
         {
             motor_ctrl_set_speed(0, 0);
-            g_state.target_left     = 0;
-            g_state.target_right    = 0;
-            g_state.pwm_left        = 0;
-            g_state.pwm_right       = 0;
-            g_state.direct_pwm_mode = false;
+            g_state.target_left      = 0;
+            g_state.target_right     = 0;
+            g_state.pwm_left         = 0;
+            g_state.pwm_right        = 0;
+            g_state.direct_pwm_mode  = false;
             g_state.command_received = false;
+            pid_reset(&pid_left);
+            pid_reset(&pid_right);
         }
+        // ── T:11 direct PWM — bypass PID ────────────────────────────────────
         else if (g_state.direct_pwm_mode)
         {
-            // T:11 direct PWM: scale -255..+255 → -100..+100
+            // Scale -255..+255 → -100..+100 and apply directly.
+            // Reset PIDs so there is no integrator wind-up surprise on next
+            // switch back to velocity mode.
             int16_t sl = (int16_t)((int32_t)g_state.pwm_left  * 100 / 255);
             int16_t sr = (int16_t)((int32_t)g_state.pwm_right * 100 / 255);
             motor_ctrl_set_speed(sl, sr);
+            pid_reset(&pid_left);
+            pid_reset(&pid_right);
         }
+        // ── Velocity PID — T:1 / T:13 ───────────────────────────────────────
         else
         {
-            motor_ctrl_set_speed(g_state.target_left, g_state.target_right);
+            // Convert ±100 target to ±RPM setpoint
+            const float scale = MOTOR_MAX_RPM / 100.0f;
+            float setpoint_l  = (float)g_state.target_left  * scale;
+            float setpoint_r  = (float)g_state.target_right * scale;
+
+            float out_l = pid_compute(&pid_left,  setpoint_l, encoder_get_left_rpm(),  dt);
+            float out_r = pid_compute(&pid_right, setpoint_r, encoder_get_right_rpm(), dt);
+
+            // ── Yaw-rate correction ──────────────────────────────────────────
+            // Only correct when driving approximately straight.  When the user
+            // commands a deliberate turn the targets differ significantly and
+            // correction would fight the intended yaw.
+            int16_t tdiff = g_state.target_left - g_state.target_right;
+            if (tdiff < 0) tdiff = -tdiff;
+            if (tdiff < YAW_STRAIGHT_THRESHOLD)
+            {
+                // gz_dps > 0  →  CCW rotation (turning left)
+                // Correct by reducing left and increasing right PWM output.
+                float corr = YAW_CORRECTION_GAIN * imu_get_gz();
+                out_l -= corr;
+                out_r += corr;
+            }
+
+            int16_t cmd_l = (int16_t)CLAMP(out_l, -100.0f, 100.0f);
+            int16_t cmd_r = (int16_t)CLAMP(out_r, -100.0f, 100.0f);
+            motor_ctrl_set_speed(cmd_l, cmd_r);
         }
     }
 }

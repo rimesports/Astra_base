@@ -201,21 +201,20 @@ void json_cmd_process_line(const char *line) {
   }
 
   // ── T:126  IMU query → synchronous T:1002 response ────────────────────────
+  // control_task calls imu_update() at 50 Hz; data is at most CONTROL_PERIOD_MS old.
   case CMD_IMU_QUERY: {
-    bool ok = imu_update();
     char buf[256];
     int len = snprintf(buf, sizeof(buf),
       "{\"T\":%d,\"r\":%.1f,\"p\":%.1f,\"y\":%.1f"
       ",\"temp\":%.1f"
       ",\"ax\":%.3f,\"ay\":%.3f,\"az\":%.3f"
       ",\"gx\":%.2f,\"gy\":%.2f,\"gz\":%.2f"
-      ",\"ok\":%s}",
+      ",\"ok\":true}",
       FEEDBACK_IMU_DATA,
       imu_get_roll(), imu_get_pitch(), imu_get_yaw(),
       imu_get_temp(),
       imu_get_ax(), imu_get_ay(), imu_get_az(),
-      imu_get_gx(), imu_get_gy(), imu_get_gz(),
-      ok ? "true" : "false");
+      imu_get_gx(), imu_get_gy(), imu_get_gz());
     if (len > 0) serial_send_line(buf);
     break;
   }
@@ -260,10 +259,10 @@ void json_cmd_process_line(const char *line) {
     uint8_t ina_buf[2] = {0};
     bool ina_ack = i2c_read_registers(INA219_I2C_ADDRESS, 0x00, ina_buf, 2);
 
-    // IMU data freshness (update + sanity check on temperature)
-    bool imu_data_ok = imu_update();
+    // IMU data freshness — control_task calls imu_update() at 50 Hz; read cached values.
     float temp = imu_get_temp();
-    bool temp_ok = (temp > -10.0f && temp < 85.0f);   // plausible silicon range
+    bool imu_data_ok = (temp > -10.0f && temp < 85.0f);   // plausible silicon range
+    bool temp_ok = imu_data_ok;
 
     // INA219 bus voltage — 0.00 means no load-side rail connected
     float batt_v = 0.0f, batt_i = 0.0f;
@@ -308,17 +307,18 @@ void json_cmd_process_line(const char *line) {
 }
 
 // ─── Periodic T:1001 chassis feedback ─────────────────────────────────────────
-// Called by main loop when continuous_fb is true and fb_interval_ms has elapsed.
+// Called by telemetry_task when continuous_fb is true.
+//
+// IMU state (roll/pitch/yaw/temp) is NOT re-read here. control_task calls
+// imu_update() at 50 Hz and writes g_state.roll/pitch/yaw/imu_temp each cycle.
+// Reading cached values avoids I2C bus contention between control_task (prio 9)
+// and telemetry_task (prio 2) even though the I2C mutex would protect correctness.
 
 void json_cmd_publish_telemetry(void) {
-  imu_update();
   ina219_read(&g_state.battery_voltage, &g_state.battery_current);
   g_state.rpm_left  = encoder_get_left_rpm();
   g_state.rpm_right = encoder_get_right_rpm();
-  g_state.roll      = imu_get_roll();
-  g_state.pitch     = imu_get_pitch();
-  g_state.yaw       = imu_get_yaw();
-  g_state.imu_temp  = imu_get_temp();
+  // g_state.roll/pitch/yaw/imu_temp written by control_task — use as-is
 
   char buf[256];
   int len = snprintf(buf, sizeof(buf),

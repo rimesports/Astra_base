@@ -36,3 +36,8 @@ float pid_compute(PIDController *pid, float setpoint, float measurement, float d
   pid->prev_error = error;
   return output;
 }
+
+void pid_reset(PIDController *pid) {
+  pid->integrator = 0.0f;
+  pid->prev_error = 0.0f;
+}

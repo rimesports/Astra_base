@@ -1,9 +1,31 @@
 #include "i2c_bus.h"
 #include "astra_config.h"
+#include "FreeRTOS.h"
+#include "semphr.h"
+#include "task.h"
 
 I2C_HandleTypeDef hi2c1;
 
+// Mutex guards all HAL I2C calls. control_task (priority 9) would otherwise preempt
+// telemetry_task (priority 2) mid-transaction, corrupting the HAL state machine.
+// The scheduler-state guard allows calls before vTaskStartScheduler() (init path).
+static SemaphoreHandle_t s_i2c_mutex = NULL;
+
+static inline void i2c_take(void) {
+    if (s_i2c_mutex && xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) {
+        xSemaphoreTake(s_i2c_mutex, portMAX_DELAY);
+    }
+}
+
+static inline void i2c_give(void) {
+    if (s_i2c_mutex && xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) {
+        xSemaphoreGive(s_i2c_mutex);
+    }
+}
+
 bool i2c_bus_init(void) {
+  s_i2c_mutex = xSemaphoreCreateMutex();
+
   __HAL_RCC_I2C1_CLK_ENABLE();
 
   hi2c1.Instance = I2C1;
@@ -23,15 +45,24 @@ bool i2c_bus_init(void) {
 }
 
 bool i2c_write_register(uint8_t device_address, uint8_t reg, uint8_t value) {
-  return HAL_I2C_Mem_Write(&hi2c1, device_address << 1, reg, I2C_MEMADD_SIZE_8BIT, &value, 1, 100) == HAL_OK;
+  i2c_take();
+  bool ok = HAL_I2C_Mem_Write(&hi2c1, device_address << 1, reg, I2C_MEMADD_SIZE_8BIT, &value, 1, 100) == HAL_OK;
+  i2c_give();
+  return ok;
 }
 
 bool i2c_write_registers(uint8_t device_address, uint8_t reg, const uint8_t *data, uint16_t length) {
-  return HAL_I2C_Mem_Write(&hi2c1, device_address << 1, reg, I2C_MEMADD_SIZE_8BIT, (uint8_t *)data, length, 200) == HAL_OK;
+  i2c_take();
+  bool ok = HAL_I2C_Mem_Write(&hi2c1, device_address << 1, reg, I2C_MEMADD_SIZE_8BIT, (uint8_t *)data, length, 200) == HAL_OK;
+  i2c_give();
+  return ok;
 }
 
 bool i2c_read_registers(uint8_t device_address, uint8_t reg, uint8_t *buffer, uint16_t length) {
-  return HAL_I2C_Mem_Read(&hi2c1, device_address << 1, reg, I2C_MEMADD_SIZE_8BIT, buffer, length, 200) == HAL_OK;
+  i2c_take();
+  bool ok = HAL_I2C_Mem_Read(&hi2c1, device_address << 1, reg, I2C_MEMADD_SIZE_8BIT, buffer, length, 200) == HAL_OK;
+  i2c_give();
+  return ok;
 }
 
 bool i2c_read_register_u16(uint8_t device_address, uint8_t reg, uint16_t *value) {

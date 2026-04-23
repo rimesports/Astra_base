@@ -68,6 +68,25 @@
 #define TASK_SERIAL_STACK       512  // 2 KB — JSON string parsing
 #define TASK_TELEMETRY_STACK    512  // 2 KB — snprintf + I2C reads
 
+// ─── Velocity PID ────────────────────────────────────────────────────────────
+// Motor: goBILDA 5203 Yellow Jacket, 312 RPM @ 12V, 19.2:1 gearbox.
+// At 7.4V nominal: ~193 RPM no-load. MOTOR_MAX_RPM sets what target_left=100 means.
+// T:1 L=1.0 → target_left=100 → setpoint = MOTOR_MAX_RPM.
+#define MOTOR_MAX_RPM           200.0f   // RPM ceiling at 7.4V; tune after bench measurement
+
+// Starting gains — expect to tune Kp and Ki on hardware.
+// Rule of thumb: increase Kp until oscillation, then back off 30%; set Ki to cancel drift.
+// Keep Kd = 0 — derivative on RPM amplifies encoder noise at this sample rate.
+#define PID_KP                  0.30f
+#define PID_KI                  0.80f
+#define PID_KD                  0.00f
+
+// Yaw-rate correction (MPU-6050 gz, deg/s → PWM correction applied when driving straight).
+// Positive gz = CCW rotation (robot turning left). Correction reduces left, increases right.
+// If robot corrects the wrong way, negate YAW_CORRECTION_GAIN.
+#define YAW_CORRECTION_GAIN     0.40f    // deg/s → PWM units
+#define YAW_STRAIGHT_THRESHOLD  15       // apply yaw correction when |target_L - target_R| < this
+
 // ─── Waveshare JSON T-codes (same as ESP32 — Jetson sees no difference) ───────
 #define CMD_SPEED_CTRL          1       // {"T":1,"L":-0.5..0.5,"R":-0.5..0.5}
 #define CMD_PWM_INPUT           11      // {"T":11,"L":-255..255,"R":-255..255}

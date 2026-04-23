@@ -25,7 +25,7 @@ typedef struct {
   float roll;
   float pitch;
   float yaw;
-  float imu_temp;               // °C from BNO055 temp register
+  float imu_temp;               // °C from MPU-6050 temp register
 
   // Battery
   float battery_voltage;

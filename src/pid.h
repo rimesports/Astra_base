@@ -20,6 +20,7 @@ typedef struct {
 
 void pid_init(PIDController *pid, float kp, float ki, float kd, float output_min, float output_max);
 float pid_compute(PIDController *pid, float setpoint, float measurement, float dt);
+void pid_reset(PIDController *pid);  // zero integrator and prev_error (call on mode switch / estop)
 
 #ifdef __cplusplus
 }
