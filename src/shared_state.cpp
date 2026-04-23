@@ -1,6 +1,6 @@
 #include "shared_state.h"
 #include "astra_config.h"
-#include "stm32l4xx_hal.h"
+#include "stm32f4xx_hal.h"
 
 RobotState g_state;
 

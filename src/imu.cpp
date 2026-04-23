@@ -1,7 +1,7 @@
 #include "imu.h"
 #include "i2c_bus.h"
 #include "astra_config.h"
-#include "stm32l4xx_hal.h"
+#include "stm32f4xx_hal.h"
 #include <math.h>
 #include <string.h>
 

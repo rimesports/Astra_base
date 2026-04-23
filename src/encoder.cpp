@@ -1,6 +1,6 @@
 #include "encoder.h"
 #include "astra_config.h"
-#include "stm32l4xx_hal.h"
+#include "stm32f4xx_hal.h"
 
 static volatile int32_t left_count = 0;
 static volatile int32_t right_count = 0;

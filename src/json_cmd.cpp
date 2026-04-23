@@ -115,7 +115,7 @@ void json_cmd_process_line(const char *line) {
     break;
   }
 
-  // ── T:127  I2C bus scan — BNO055 (0x28/0x29) and INA219 (0x40) ──────────
+  // ── T:127  I2C bus scan — MPU-6050 (0x68) and INA219 (0x40) ────────────
   case 127: {
     if (hi2c1.State != HAL_I2C_STATE_READY) {
       HAL_I2C_DeInit(&hi2c1);

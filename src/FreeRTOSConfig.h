@@ -1,7 +1,7 @@
 #pragma once
 
 // ═════════════════════════════════════════════════════════════════════════════
-//  FreeRTOS configuration — STM32L476RG @ 80 MHz, Cortex-M4F
+//  FreeRTOS configuration — STM32F411CEU6 @ 96 MHz, Cortex-M4F
 //
 //  Tuned for a robotics application:
 //    - 1 ms tick (1 kHz)
@@ -17,7 +17,7 @@
 #define configUSE_TICKLESS_IDLE                 0   // keep tick running for HAL
 
 // ─── Clock & tick ────────────────────────────────────────────────────────────
-#define configCPU_CLOCK_HZ                      80000000UL
+#define configCPU_CLOCK_HZ                      96000000UL
 #define configTICK_RATE_HZ                      1000        // 1 ms tick
 
 // ─── Tasks ───────────────────────────────────────────────────────────────────
@@ -30,7 +30,7 @@
 #define configTASK_NOTIFICATION_ARRAY_ENTRIES   1
 
 // ─── Heap ────────────────────────────────────────────────────────────────────
-// STM32L476RG has 128 KB SRAM. 20 KB for FreeRTOS heap leaves plenty for
+// STM32F411CEU6 has 128 KB SRAM. 20 KB for FreeRTOS heap leaves plenty for
 // stack, globals, and future tasks (safety, collector, sensor).
 #define configTOTAL_HEAP_SIZE                   ( 20 * 1024 )
 #define configSUPPORT_STATIC_ALLOCATION         0
@@ -82,7 +82,7 @@
 // ─── Interrupt vector name mapping ───────────────────────────────────────────
 // port.c compiles its ISRs with the names below, making them land in the ARM
 // vector table automatically.  SysTick is NOT remapped here because we define
-// SysTick_Handler ourselves in stm32l4xx_it.cpp to also call HAL_IncTick().
+// SysTick_Handler ourselves in stm32f4xx_it.cpp to also call HAL_IncTick().
 #define vPortSVCHandler    SVC_Handler
 #define xPortPendSVHandler PendSV_Handler
 

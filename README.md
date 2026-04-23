@@ -72,9 +72,12 @@ Command interface uses JSON T-codes matching the Waveshare Wave Rover / ugv_rpi 
 
 ## Roadmap
 
-- [ ] Port firmware to STM32F411CEU6 (board on order)
-- [ ] USB CDC transport (replace UART)
+- [x] Port firmware to STM32F411CEU6 (Black Pill V3.1)
+- [x] USB CDC transport over OTG FS (PA11/PA12)
+- [x] ST-Link SWD flashing without DFU button dance (VC_CORERESET trick)
+- [ ] Wire remaining peripherals (right motor, MPU-6050, INA219)
+- [ ] Verify right encoder (PB5/PB6)
+- [ ] PID speed control loop
 - [ ] Custom bootloader + OTA firmware update from Jetson
 - [ ] Motors 3–5 (TIM1 channels)
-- [ ] PID speed control loop
 - [ ] ROS2 node integration

@@ -1,0 +1,9 @@
+{
+  "name": "STM32_USB_Device",
+  "version": "1.0.0",
+  "description": "STM32Cube USB Device Library — Core + CDC class",
+  "build": {
+    "srcDir": "Src",
+    "includeDir": "Inc"
+  }
+}

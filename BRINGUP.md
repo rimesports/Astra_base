@@ -32,7 +32,7 @@ Stage 2: Jetson integration
 | Tool | Use | Required? |
 |------|-----|-----------|
 | Digital multimeter | Voltage, continuity, diode check | **Essential** |
-| USB-A to Mini-B cable | Nucleo CN1 (ST-Link) to laptop | **Essential** |
+| USB-C cable | Black Pill → PC / Jetson (data cable, not charge-only) | **Essential** |
 | Serial terminal — PuTTY / Tera Term / `pio device monitor` | Send T-codes, read responses | **Essential** |
 | Logic analyzer (Saleae, cheap clone) | Verify PWM freq/duty, I2C bus | Strongly recommended |
 | Oscilloscope | PWM waveform, back-EMF check | Optional but useful |
@@ -77,33 +77,30 @@ Do every item before connecting USB for the first time.
 #### 0-A — Firmware
 
 - [ ] `~/.platformio/penv/Scripts/pio.exe run` completes with `[SUCCESS]`
-  - RAM: ~22% of 98 304 bytes
-  - Flash: ~3% of 1 048 576 bytes
-- [ ] STM32CubeProgrammer installed (required for ST-Link USB driver on Windows)
-  - Verify: open STM32CubeProgrammer, select ST-LINK, click **Connect**
-  - It should detect the STM32L476RG and show memory map
+  - RAM: ~17% of 131 072 bytes
+  - Flash: ~8% of 524 288 bytes
 
-#### 0-B — Board Inspection (Nucleo)
+#### 0-B — Board Inspection (Black Pill)
 
-- [ ] No bent or bridged pins on CN7/CN8/CN9/CN10 connectors
-- [ ] Nucleo LD2 LED (green, next to USB) lights up when USB is plugged in
+- [ ] No bent or bridged pins on headers
+- [ ] Blue LED on Black Pill lights up when USB-C is plugged in
 - [ ] No visible solder bridges, burned components, or corrosion
-- [ ] Confirm the MCU is an STM32**L476**RG (printed on chip top) — not H7 or G4
+- [ ] Confirm the MCU is an STM32**F411**CEU6 (printed on chip top)
 
 #### 0-C — Wiring Continuity (Before Connecting to MDD10A)
 
-With the Nucleo **unpowered**, use the multimeter continuity beeper:
+With the Black Pill **unpowered**, use the multimeter continuity beeper:
 
 | Check | Expected |
 |-------|----------|
-| PA0 (CN8 A0) to GND | No continuity (open) |
-| PA1 (CN8 A1) to GND | No continuity (open) |
-| PC0 (CN8 A5) to GND | No continuity (open) |
-| PC1 (CN8 A4) to GND | No continuity (open) |
-| PB3 (CN9 D3) to GND | No continuity (open) |
-| PB8 (CN9 D15) to PB9 (CN9 D14) | No continuity (open) — I2C lines should not be shorted |
-| CN8 3V3 to GND | No continuity — if beeps, there is a power rail short, do NOT power up |
-| CN8 5V to GND | No continuity — if beeps, power rail short, do NOT power up |
+| PA0 to GND | No continuity (open) |
+| PA1 to GND | No continuity (open) |
+| PB0 to GND | No continuity (open) |
+| PB1 to GND | No continuity (open) |
+| PB3 to GND | No continuity (open) |
+| PB8 to PB9 | No continuity (open) — I2C lines should not be shorted |
+| 3V3 to GND | No continuity — if beeps, power rail short, do NOT power up |
+| 5V to GND | No continuity — if beeps, power rail short, do NOT power up |
 
 #### 0-D — LiPo Pre-Check
 
@@ -135,8 +132,7 @@ Expected output (last few lines):
 ```
 
 If it fails:
-- `No ST-Link found`: STM32CubeProgrammer not installed, or USB cable is charge-only
-  (some USB cables have power wires only — use a data cable)
+- `init mode failed`: NRST not wired to ST-Link, or USB ISR blocking SWD — see WIRING.md section 5
 - `Error: libusb_open() failed with LIBUSB_ERROR_ACCESS`: on Linux, add udev rule:
   ```bash
   echo 'SUBSYSTEM=="usb", ATTR{idVendor}=="0483", MODE="0666"' | sudo tee /etc/udev/rules.d/49-stlink.rules
@@ -155,7 +151,7 @@ Open the serial terminal **before** resetting the board:
 | Parity | None |
 | Flow control | None (off) |
 | Line ending sent | LF (`\n`) |
-| Port | Windows: `COMx` shown in Device Manager → Ports → STMicroelectronics Virtual COM Port |
+| Port | Windows: `COM6` shown in Device Manager → Ports → USB Serial Device |
 | Port | Linux: `/dev/ttyACM0` |
 
 Via PlatformIO monitor:
@@ -165,7 +161,7 @@ Via PlatformIO monitor:
 
 #### 1-C — Boot Verification
 
-Press the **RESET** button (black button) on the Nucleo.
+Press the **NRST** button on the Black Pill (or unplug/replug USB-C).
 
 Within 500 ms you should see T:1001 telemetry arriving every 200 ms:
 ```json
@@ -214,15 +210,15 @@ voltage and frequency. **No motor battery. No motors connected to MDD10A.**
 
 #### 2-A — Wiring
 
-Connect the 5-wire control cable from the Nucleo to the MDD10A header:
+Connect the 5-wire control cable from the Black Pill to the MDD10A header:
 
-| MDD10A Header | STM32 Signal | Nucleo Pin |
-|--------------|-------------|-----------|
-| Pin 1 — GND | GND | CN8 GND |
-| Pin 2 — PWM2 | PA1 (TIM2_CH2) | CN8 A1 |
-| Pin 3 — DIR2 | PC1 | CN8 A4 |
-| Pin 4 — PWM1 | PA0 (TIM2_CH1) | CN8 A0 |
-| Pin 5 — DIR1 | PC0 | CN8 A5 |
+| MDD10A Header | STM32 Signal | Black Pill Pin |
+|--------------|-------------|---------------|
+| Pin 1 — GND | GND | GND |
+| Pin 2 — PWM2 | PA1 (TIM2_CH2) | PA1 |
+| Pin 3 — DIR2 | PB1 | PB1 |
+| Pin 4 — PWM1 | PA0 (TIM2_CH1) | PA0 |
+| Pin 5 — DIR1 | PB0 | PB0 |
 
 Double-check pin 1 is GND (use multimeter continuity from MDD10A pin 1 to Nucleo GND
 before plugging in).
@@ -298,10 +294,10 @@ Try different speeds and verify duty scales linearly:
 
 | Symptom | Root Cause | Fix |
 |---------|-----------|-----|
-| DIR pins always 0V | PC0/PC1 not wired to MDD10A, or GPIO not initialized | Check wiring and `MX_GPIO_Init()` |
+| DIR pins always 0V | PB0/PB1 not wired to MDD10A, or GPIO not initialized | Check wiring and `MX_GPIO_Init()` |
 | DIR doesn't toggle on command | Wiring wrong pin | Re-verify against WIRING.md table |
 | PWM reads DC voltage (no frequency) | PA0/PA1 not configured as TIM2 AF1 | Check `GPIO_InitStruct.Alternate = GPIO_AF1_TIM2` in `MX_GPIO_Init` |
-| PWM frequency incorrect | TIM2 prescaler wrong | Verify prescaler=7, period=1000, SYSCLK=80MHz |
+| PWM frequency incorrect | TIM2 prescaler wrong | Verify prescaler=9, period=1000, SYSCLK=96MHz |
 | Multimeter reads ~1.1V DC on PWM | DMM averaging a 10 kHz waveform at ~33% duty — this is normal | Use oscilloscope or logic analyzer for true reading |
 
 **Phase 2 pass**: DIR toggles correctly, PWM at 10 kHz with correct duty cycle at multiple speeds.
@@ -393,8 +389,8 @@ If current exceeds 8A at any point with no load: check for motor winding short.
 | Motor doesn't spin | No VIN to MDD10A, or motor terminals loose | Check VIN voltage, tighten screw terminals |
 | Motor spins one direction only | DIR wiring to wrong STM32 pin | Re-check WIRING.md |
 | Motor hums but doesn't spin | PWM duty too low, or motor binding | Try `{"T":11,"L":100,"R":0}` to increase duty |
-| Motor oscillates / stutters at low speed | GND not shared between STM32 and battery | Add GND wire from Nucleo GND to battery negative |
-| Both motors always spin regardless of command | DIR floating high due to missing GND | Verify MDD10A pin 1 is connected to Nucleo GND |
+| Motor oscillates / stutters at low speed | GND not shared between STM32 and battery | Add GND wire from Black Pill GND to battery negative |
+| Both motors always spin regardless of command | DIR floating high due to missing GND | Verify MDD10A pin 1 is connected to Black Pill GND |
 | MDD10A gets hot quickly | Motor stall or overcurrent | Check motor shaft is not binding; add current limiting |
 
 **Phase 3 pass**: both motors spin in both directions, stop on command, no abnormal heat or current.
@@ -408,12 +404,12 @@ If current exceeds 8A at any point with no load: check for motor winding short.
 
 #### 4-A — Left Encoder Wiring
 
-| Encoder wire | Connects to | Nucleo |
-|-------------|-------------|--------|
-| VCC (red) | **3.3V** | CN8 3V3 |
-| GND (black) | GND | CN8 GND |
-| Channel A (green) | PB3 | CN9 D3 |
-| Channel B (blue) | PB4 | CN9 D5 |
+| Encoder wire | Connects to | Black Pill Pin |
+|-------------|-------------|---------------|
+| VCC (red) | **3.3V** | 3V3 |
+| GND (black) | GND | GND |
+| Channel A (green) | PB3 | PB3 |
+| Channel B (blue) | PB4 | PB4 |
 
 > **Critical**: use 3.3V, not 5V. Measure before connecting to confirm the pin reads 3.3V.
 
@@ -460,8 +456,10 @@ Swap encoder A and B wires at the connector for that motor. Do not change firmwa
 
 #### 4-D — Right Encoder
 
-Connect right encoder (VCC → 3.3V, GND, A → PB5, B → PB6) and repeat 4-B and 4-C
+Connect right encoder (VCC → 3.3V, GND, A → PB6, B → PB5) and repeat 4-B and 4-C
 using right motor commands: `{"T":11,"L":0,"R":25}` and `{"T":11,"L":0,"R":-25}`.
+
+> Note: Right encoder A/B are mapped to PB6/PB5 respectively (swapped from physical label) to match physical motor direction.
 
 The `"R"` field in T:1001 is right RPM.
 
@@ -489,56 +487,52 @@ The `"R"` field in T:1001 is right RPM.
 
 ---
 
-### Phase 5 — I2C Bus: BNO055 IMU
+### Phase 5 — I2C Bus: MPU-6050 IMU
 
-**Goal**: BNO055 detected, returns valid Euler angles and temperature.
+**Goal**: MPU-6050 detected, returns valid roll/pitch and temperature.
 
 #### 5-A — Wiring
 
-| BNO055 Pin | Connects to | Nucleo |
-|-----------|-------------|--------|
-| VCC | 3.3V | CN8 3V3 |
-| GND | GND | CN8 GND |
-| SCL | PB8 | CN9 D15 |
-| SDA | PB9 | CN9 D14 |
-| ADR | GND | CN8 GND — sets I2C address to 0x28 |
+| GY-521 Pin | Connects to | Black Pill Pin |
+|-----------|-------------|---------------|
+| VCC | 3.3V | 3V3 |
+| GND | GND | GND |
+| SCL | PB8 | PB8 |
+| SDA | PB9 | PB9 |
+| AD0 | GND | GND — sets I2C address to 0x68 |
 | INT | Leave unconnected | — |
-| RST | Leave unconnected (or 3.3V) | — |
 
-> Pull-up resistors: most BNO055 breakout boards include 4.7 kΩ pull-ups on SCL/SDA.
-> If using a bare chip, add 4.7 kΩ from SCL to 3.3V and SDA to 3.3V.
-> Do not add external pull-ups if the breakout already has them — double pull-ups
-> (2.35 kΩ effective) still work at 100 kHz but reduce noise margin.
+> GY-521 breakout includes 4.7 kΩ pull-ups on SCL/SDA.
+> Do not add external pull-ups — double pull-ups reduce noise margin.
 
 #### 5-B — Power-On Timing
 
-The BNO055 requires **650 ms** to boot from cold power-on before it will respond to
-I2C. The `imu_init()` function in firmware calls `HAL_Delay(25)` between mode changes,
-which is sufficient after the main system is already running. However, if the sensor is
-powered at the same time as the STM32, add an extra delay or power the sensor before
-the STM32.
-
-In practice: **power the BNO055 first** (connect it to the Nucleo which is already
-running) and wait 1 second before querying.
+The MPU-6050 boots quickly (< 10 ms) but firmware calls `HAL_Delay(100)` after reset
+and `HAL_Delay(10)` after wake — sufficient for reliable init. Connect the sensor
+while the STM32 is already running; wait 0.5 s before querying.
 
 #### 5-C — Chip ID Verification
 
-Disable telemetry if still running: `{"T":130,"cmd":0}`
+First scan the I2C bus to confirm the sensor is present:
+```json
+{"T":127}
+```
+Expected: `"mpu6050_68":{"ack":true,"id":"0x68"}`
 
-Send an IMU query:
+Then query IMU data:
 ```json
 {"T":126}
 ```
 
 Expected response (T:1002):
 ```json
-{"T":1002,"r":0.0,"p":-2.3,"y":127.4,"temp":25.0,"ax":0.01,"ay":-0.03,"az":0.00,"gx":0.1,"gy":0.0,"gz":0.0,"ok":true}
+{"T":1002,"r":0.0,"p":-1.5,"y":0.0,"temp":25.3,"ax":0.01,"ay":-0.02,"az":9.81,"gx":0.1,"gy":0.0,"gz":0.0,"ok":true}
 ```
 
 Key fields to check:
-- `"ok":true` — confirms chip ID read = 0xA0 and mode set to NDOF
+- `"ok":true` — WHO_AM_I returned 0x68 and sensor initialized
 - `"temp"` — should read roughly ambient temperature (20–30°C typical)
-- `"y"` (yaw / heading) — any value 0–360, will stabilize after calibration
+- `"az"` — near 9.81 m/s² when board is flat (1g on Z axis)
 - `"r"` and `"p"` — small values (within ±5°) when sensor is flat
 
 If `"ok":false` or no T:1002 arrives: see failure table below.
@@ -547,32 +541,29 @@ If `"ok":false` or no T:1002 arrives: see failure table below.
 
 With the sensor powered and responding:
 
-1. Tilt the board forward (nose down) while querying: `"p"` (pitch) should go positive.
+1. Tilt the board forward (nose down): `"p"` (pitch) should go positive.
 2. Tilt left: `"r"` (roll) should go negative.
-3. Rotate clockwise on a flat surface: `"y"` (yaw) should increase toward 360°.
+3. Rotate in place: `"y"` (yaw) will drift — this is expected (MPU-6050 has no magnetometer).
 
-This confirms the coordinate frame. If axes are swapped or inverted, note it for the
-Jetson-side software — the firmware passes raw values through.
+#### 5-E — IMU Calibration
 
-#### 5-E — BNO055 Calibration (NDOF mode)
-
-The BNO055 in NDOF mode performs continuous in-background calibration. It does NOT need
-to be calibrated manually before use, but accuracy improves over the first few minutes
-of motion. The calibration state is not exposed in this firmware version.
-
-For best yaw accuracy: after power-on, move the robot in a figure-8 pattern for 30 seconds
-before using yaw for navigation. Roll and pitch are accurate immediately.
+The MPU-6050 uses a complementary filter. Run calibration while the robot is flat and still:
+```json
+{"T":160}
+```
+This collects 500 samples (~1 s) and zeroes gyro offsets. Gyro drift on yaw is normal.
+Roll and pitch are accurate immediately after calibration.
 
 #### Failure Modes
 
 | Symptom | Root Cause | Fix |
 |---------|-----------|-----|
-| `"ok":false` | Chip not found at 0x28 — I2C not reaching sensor | Check SCL/SDA wiring, 3.3V present, ADR→GND |
-| No T:1002 response at all | I2C bus hung | Reset STM32; check for short on SDA/SCL |
-| `"temp":0.0` | Temp register read failed | Usually means I2C timeout on read |
-| `"r","p","y"` all 0.0 | NDOF mode not fully initialized | Wait 700ms after power-on, retry T:126 |
-| Values drift or are noisy | Strong magnetic interference (motor magnets) | Mount BNO055 away from motors (>5 cm) |
-| Yaw slowly drifts | Normal NDOF behavior without magnetometer calibration | Run figure-8 motion after power-on |
+| `"ok":false` | Chip not found at 0x68 — I2C not reaching sensor | Check SCL/SDA wiring, 3.3V present, AD0→GND |
+| `"mpu6050_68":{"ack":false}` in T:127 | Sensor not on bus | Check SCL/SDA, verify 3.3V at VCC pin |
+| No T:1002 response | I2C bus hung | Reset STM32; check for SDA/SCL short |
+| `"temp":0.0` | Temp register read failed | I2C timeout; check pull-ups not doubled |
+| `"r","p"` stuck at 0.0 | imu_update() failing silently | Check T:127 first; ensure WHO_AM_I = 0x68 |
+| Values noisy at rest | EMI from motor wires coupling into I2C | Route I2C wires away from motor power wires |
 
 **Phase 5 pass**: T:1002 returns `"ok":true`, temperature plausible, angles change when sensor is moved.
 
@@ -598,17 +589,17 @@ INA219 default register settings (PGA gain ÷8, 32V bus range).
 
 | INA219 Pin | Connects to |
 |-----------|-------------|
-| VCC | 3.3V (Nucleo CN8) |
-| GND | GND (Nucleo CN8) |
-| SCL | PB8 — shared with BNO055 |
-| SDA | PB9 — shared with BNO055 |
+| VCC | 3.3V (Black Pill 3V3) |
+| GND | GND |
+| SCL | PB8 — shared with MPU-6050 |
+| SDA | PB9 — shared with MPU-6050 |
 | A0 | GND → I2C address 0x40 |
 | A1 | GND → I2C address 0x40 |
 | VIN+ | Battery positive (before MDD10A) |
 | VIN− | MDD10A VIN+ (after shunt, toward load) |
 
-Both BNO055 and INA219 share the same SCL/SDA lines — this is correct I2C multi-device
-topology. They have different addresses (0x28 and 0x40) so there is no conflict.
+Both MPU-6050 and INA219 share the same SCL/SDA lines — this is correct I2C multi-device
+topology. They have different addresses (0x68 and 0x40) so there is no conflict.
 
 #### 6-B — Voltage Reading
 
@@ -670,11 +661,11 @@ failsafe works.
 
 All hardware connected:
 - Both motors → MDD10A M1/M2
-- Both encoders → PB3/PB4 (left), PB5/PB6 (right)
-- BNO055 → I2C1 (PB8/PB9)
+- Both encoders → PB3/PB4 (left), PB6/PB5 (right)
+- MPU-6050 → I2C1 (PB8/PB9)
 - INA219 → I2C1 (same bus)
 - Motor battery → MDD10A VIN
-- STM32 → laptop USB (ST-Link VCP)
+- Black Pill → laptop USB-C (CDC COM6)
 - Robot on stand, wheels off ground
 
 #### 7-A — Full Telemetry Check
@@ -693,7 +684,7 @@ Confirm **all fields are live** in T:1001:
 | Field | Should show |
 |-------|-------------|
 | `"L"`, `"R"` | 0.0 at rest, non-zero when motors spin |
-| `"r"`, `"p"`, `"y"` | Angles changing when board tilted |
+| `"r"`, `"p"` | Angles changing when board tilted (yaw drifts — normal, no magnetometer) |
 | `"temp"` | Ambient temperature (~20–30°C) |
 | `"v"` | LiPo voltage (7.0–8.4V) |
 | `"i"` | Low quiescent current at rest |
@@ -753,14 +744,14 @@ the I2C reads in `telemetry_task`.
 
 ---
 
-### Phase 8 — USB-VCP Handshake
+### Phase 8 — USB-CDC Handshake
 
-**Goal**: Jetson enumerates the Nucleo as `/dev/ttyACM0` and can exchange messages.
+**Goal**: Jetson enumerates the Black Pill as `/dev/ttyACM0` and can exchange messages.
 
 #### 8-A — Hardware Connection
 
-Move the Nucleo USB cable from the **laptop to the Jetson USB-A port**.
-The Jetson must be booted and logged in before plugging in the Nucleo.
+Move the Black Pill USB-C cable from the **laptop to the Jetson USB port**.
+The Jetson must be booted and logged in before plugging in.
 
 #### 8-B — Device Enumeration
 
@@ -775,7 +766,7 @@ If missing:
 ```bash
 # Check USB enumeration
 lsusb | grep -i stm
-# Expected line: Bus 001 Device 003: ID 0483:374b STMicroelectronics ST-LINK/V2-1
+# Expected line: Bus 001 Device 003: ID 0483:5740 STMicroelectronics Virtual COM Port
 
 # Check kernel driver loaded
 dmesg | tail -20 | grep -i "ttyACM\|cdc_acm"
@@ -881,7 +872,7 @@ All tests passed.
 |---------|-----------|-----|
 | `/dev/ttyACM0` missing | `cdc_acm` driver not loaded | `sudo modprobe cdc_acm` |
 | `Permission denied` | Not in `dialout` group | `sudo usermod -aG dialout $USER`, re-login |
-| No T:1001 data | STM32 not powered (USB cable unplugged) | Check Nucleo LED, press RESET |
+| No T:1001 data | STM32 not powered (USB cable unplugged) | Check Blue LED on Black Pill, press NRST |
 | `serial.SerialException` in Python | Port in use by another process | `sudo fuser /dev/ttyACM0` to find and kill it |
 | Garbled data | Line ending mismatch | Ensure sending `\n` not `\r\n` |
 
@@ -963,8 +954,8 @@ understood, voltage monitoring active.
 │  Battery B — Jetson power bank / 19V supply         │
 │                                                      │
 │  Jetson PSU ──► Jetson barrel / USB-C               │
-│  Jetson USB-A ──► Nucleo CN1 USB (5V @ ≤500mA)     │
-│  Nucleo internal 3.3V reg ──► BNO055, INA219 logic  │
+│  Jetson USB-A ──► Black Pill USB-C (5V @ ≤500mA)   │
+│  Black Pill 3.3V reg ──► MPU-6050, INA219 logic     │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -995,7 +986,7 @@ Step 2  Connect motor LiPo to MDD10A VIN.
         → MDD10A powers on; motors are stopped (PWM = 0).
 Step 3  Boot Jetson from Battery B.
         → Wait for Jetson to fully boot to desktop/terminal.
-Step 4  Connect Nucleo USB cable to Jetson USB-A port.
+Step 4  Connect Black Pill USB-C cable to Jetson USB port.
         → STM32 powers on; FreeRTOS starts; /dev/ttyACM0 appears.
 Step 5  Confirm /dev/ttyACM0 is present: ls /dev/ttyACM*
 Step 6  Confirm T:1001 telemetry is flowing (run test_serial.py or open terminal).
@@ -1008,7 +999,7 @@ Step 7  Start robot software on Jetson.
 Step 1  Send stop command from Jetson software: {"T":1,"L":0,"R":0}
 Step 2  Verify RPM = 0 in telemetry — motors fully stopped.
 Step 3  Stop robot software on Jetson.
-Step 4  Disconnect Nucleo USB from Jetson.
+Step 4  Disconnect Black Pill USB-C from Jetson.
         → STM32 powers down; MDD10A is now signal-less (DIR/PWM float).
 Step 5  Immediately after: disconnect motor LiPo.
         → Important: disconnect within a few seconds of STM32 powerdown,
@@ -1114,7 +1105,7 @@ Stage 1 — STM32 Standalone
   [ ] Phase 2  DIR toggles correctly, PWM at 10 kHz with correct duty cycle
   [ ] Phase 3  Both motors spin, direction correct, current in expected range
   [ ] Phase 4  Both encoders return correct RPM and sign
-  [ ] Phase 5  BNO055 returns "ok":true, angles change when tilted
+  [ ] Phase 5  MPU-6050 returns "ok":true, angles change when tilted
   [ ] Phase 6  INA219 reads correct LiPo voltage, current rises with motor load
   [ ] Phase 7  Full telemetry all-fields live, drive sequence OK, heartbeat stops motors
 

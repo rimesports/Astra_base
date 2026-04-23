@@ -1,5 +1,5 @@
 // ═════════════════════════════════════════════════════════════════════════════
-//  main.cpp — Astra Base STM32L476RG
+//  main.cpp — Astra Base STM32F411CEU6 (WeAct Black Pill V3.1)
 //
 //  Three FreeRTOS tasks:
 //
@@ -15,7 +15,7 @@
 //     Sends periodic T:1001 feedback when continuous_fb is enabled.
 //     Lowest priority — can be delayed without affecting robot behaviour.
 //
-//  Interrupt handlers (SysTick, PendSV, SVC, EXTI) live in stm32l4xx_it.cpp.
+//  Interrupt handlers (SysTick, PendSV, SVC, EXTI) live in stm32f4xx_it.cpp.
 // ═════════════════════════════════════════════════════════════════════════════
 
 #include "main.h"
@@ -28,20 +28,18 @@
 #include "ina219.h"
 #include "serial_cmd.h"
 #include "json_cmd.h"
-#include "stm32l4xx_hal.h"
+#include "stm32f4xx_hal.h"
 #include "FreeRTOS.h"
 #include "task.h"
 
 // ─── HAL peripheral handles (extern'd in main.h) ──────────────────────────────
 // hi2c1 is defined in i2c_bus.cpp — do not re-define here
 TIM_HandleTypeDef htim2;
-UART_HandleTypeDef huart2;
 
 // ─── Peripheral init prototypes ──────────────────────────────────────────────
 void SystemClock_Config(void);
 void MX_GPIO_Init(void);
 void MX_TIM2_Init(void);
-void MX_USART2_UART_Init(void);
 
 // ─── FreeRTOS task prototypes ─────────────────────────────────────────────────
 static void control_task(void *arg);
@@ -80,7 +78,8 @@ int main(void)
     // Peripheral hardware init — must complete before tasks start
     MX_GPIO_Init();
     MX_TIM2_Init();
-    MX_USART2_UART_Init();
+    // USB CDC is initialised inside serial_init() via USBD_Init/Start.
+    // USART2 is no longer used — communication is over USB-C (PA11/PA12).
 
     // Module init
     shared_state_init();
@@ -210,7 +209,7 @@ static void telemetry_task(void *arg)
 
 // ═════════════════════════════════════════════════════════════════════════════
 //  HAL_GPIO_EXTI_Callback
-//  Called by EXTI handlers in stm32l4xx_it.cpp via HAL_GPIO_EXTI_IRQHandler.
+//  Called by EXTI handlers in stm32f4xx_it.cpp via HAL_GPIO_EXTI_IRQHandler.
 // ═════════════════════════════════════════════════════════════════════════════
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
@@ -226,38 +225,35 @@ void SystemClock_Config(void)
 {
     RCC_OscInitTypeDef RCC_OscInitStruct = {0};
     RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
-    RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
 
-    HAL_PWREx_EnableVddIO2();
-
-    // HSI 16 MHz → PLL → 80 MHz SYSCLK
-    // VCO = 16 MHz * N / M = 16 * 20 / 1 = 320 MHz
-    // SYSCLK = VCO / R = 320 / 4 = 80 MHz
-    // Note: PLLRGE / PLLVCOSEL / PLLFRACN are STM32H7 fields — not present on L476.
+    // HSI 16 MHz → PLL → 96 MHz SYSCLK + 48 MHz USB
+    // PLL input = HSI / M = 16 / 8 = 2 MHz
+    // VCO       = 2 * N   = 2 * 192 = 384 MHz  (≤ 432 MHz — OK)
+    // SYSCLK    = VCO / P = 384 / 4 = 96 MHz
+    // USB48     = VCO / Q = 384 / 8 = 48 MHz   (required exact value for USB)
+    //
+    // Flash latency 3 WS required for SYSCLK > 90 MHz @ 3.3 V (RM0383 Table 6)
     RCC_OscInitStruct.OscillatorType      = RCC_OSCILLATORTYPE_HSI;
     RCC_OscInitStruct.HSIState            = RCC_HSI_ON;
     RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
     RCC_OscInitStruct.PLL.PLLState        = RCC_PLL_ON;
     RCC_OscInitStruct.PLL.PLLSource       = RCC_PLLSOURCE_HSI;
-    RCC_OscInitStruct.PLL.PLLM            = 1;               // /1 → 16 MHz into VCO
-    RCC_OscInitStruct.PLL.PLLN            = 20;              // x20 → 320 MHz VCO
-    RCC_OscInitStruct.PLL.PLLP            = RCC_PLLP_DIV7;  // PLLP unused as SYSCLK
-    RCC_OscInitStruct.PLL.PLLQ            = RCC_PLLQ_DIV2;  // PLLQ (USB, RNG)
-    RCC_OscInitStruct.PLL.PLLR            = RCC_PLLR_DIV4;  // /4 → 80 MHz SYSCLK
+    RCC_OscInitStruct.PLL.PLLM            = 8;    // /8  → 2 MHz PLL input
+    RCC_OscInitStruct.PLL.PLLN            = 192;  // ×192 → 384 MHz VCO
+    RCC_OscInitStruct.PLL.PLLP            = RCC_PLLP_DIV4;  // /4 → 96 MHz SYSCLK
+    RCC_OscInitStruct.PLL.PLLQ            = 8;    // /8 → 48 MHz USB clock
     HAL_RCC_OscConfig(&RCC_OscInitStruct);
 
+    // APB1 max = 50 MHz on F411 → divide HCLK by 2 → APB1 = 48 MHz
+    // TIM2 clock = 2 × APB1 = 96 MHz (hardware doubles when APB prescaler ≠ 1)
+    // TIM2 PSC=9 → timer clock 9.6 MHz; ARR=1000 → PWM = 9.6 kHz (fine for DC motors)
     RCC_ClkInitStruct.ClockType      = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK |
                                        RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
     RCC_ClkInitStruct.SYSCLKSource   = RCC_SYSCLKSOURCE_PLLCLK;
-    RCC_ClkInitStruct.AHBCLKDivider  = RCC_SYSCLK_DIV1;
-    RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
-    RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
-    HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_4);
-
-    PeriphClkInit.PeriphClockSelection  = RCC_PERIPHCLK_USART2 | RCC_PERIPHCLK_I2C1;
-    PeriphClkInit.Usart2ClockSelection  = RCC_USART2CLKSOURCE_PCLK1;
-    PeriphClkInit.I2c1ClockSelection    = RCC_I2C1CLKSOURCE_PCLK1;
-    HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit);
+    RCC_ClkInitStruct.AHBCLKDivider  = RCC_SYSCLK_DIV1;   // HCLK  = 96 MHz
+    RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;     // APB1  = 48 MHz
+    RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;     // APB2  = 96 MHz
+    HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_3);
 }
 
 void MX_GPIO_Init(void)
@@ -266,7 +262,6 @@ void MX_GPIO_Init(void)
 
     __HAL_RCC_GPIOA_CLK_ENABLE();
     __HAL_RCC_GPIOB_CLK_ENABLE();
-    __HAL_RCC_GPIOC_CLK_ENABLE();
 
     // Motor direction pins — default low (forward)
     HAL_GPIO_WritePin(MOTOR_LEFT_DIR_PORT,  MOTOR_LEFT_DIR_PIN,  GPIO_PIN_RESET);
@@ -276,7 +271,7 @@ void MX_GPIO_Init(void)
     GPIO_InitStruct.Mode  = GPIO_MODE_OUTPUT_PP;
     GPIO_InitStruct.Pull  = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-    HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);   // B0=DIR_L, B1=DIR_R (F411 Black Pill)
 
     // Motor PWM pins — TIM2 CH1/CH2 alternate function
     GPIO_InitStruct.Pin       = MOTOR_LEFT_PWM_PIN | MOTOR_RIGHT_PWM_PIN;
@@ -286,14 +281,6 @@ void MX_GPIO_Init(void)
     GPIO_InitStruct.Alternate = GPIO_AF1_TIM2;
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-    // UART TX/RX — USART2 alternate function
-    GPIO_InitStruct.Pin       = UART_TX_PIN | UART_RX_PIN;
-    GPIO_InitStruct.Mode      = GPIO_MODE_AF_PP;
-    GPIO_InitStruct.Pull      = GPIO_NOPULL;
-    GPIO_InitStruct.Speed     = GPIO_SPEED_FREQ_VERY_HIGH;
-    GPIO_InitStruct.Alternate = GPIO_AF7_USART2;
-    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
     // I2C SCL/SDA — open-drain with pull-up
     GPIO_InitStruct.Pin       = I2C_SCL_PIN | I2C_SDA_PIN;
     GPIO_InitStruct.Mode      = GPIO_MODE_AF_OD;
@@ -301,15 +288,6 @@ void MX_GPIO_Init(void)
     GPIO_InitStruct.Speed     = GPIO_SPEED_FREQ_VERY_HIGH;
     GPIO_InitStruct.Alternate = GPIO_AF4_I2C1;
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
-    // BNO055 RST — output, default high (not in reset)
-    HAL_GPIO_WritePin(BNO055_RST_PORT, BNO055_RST_PIN, GPIO_PIN_SET);
-    GPIO_InitStruct.Pin       = BNO055_RST_PIN;
-    GPIO_InitStruct.Mode      = GPIO_MODE_OUTPUT_PP;
-    GPIO_InitStruct.Pull      = GPIO_NOPULL;
-    GPIO_InitStruct.Speed     = GPIO_SPEED_FREQ_LOW;
-    GPIO_InitStruct.Alternate = 0;
-    HAL_GPIO_Init(BNO055_RST_PORT, &GPIO_InitStruct);
 
     // Encoder quadrature inputs — EXTI both edges, pull-up
     GPIO_InitStruct.Pin  = ENCODER_LEFT_A_PIN  | ENCODER_LEFT_B_PIN |
@@ -336,7 +314,7 @@ void MX_TIM2_Init(void)
     __HAL_RCC_TIM2_CLK_ENABLE();
 
     htim2.Instance               = TIM2;
-    htim2.Init.Prescaler         = 7;
+    htim2.Init.Prescaler         = 9;   // TIM2 clk = 100 MHz; /10 → 10 MHz; /ARR(1000) → 10 kHz PWM
     htim2.Init.CounterMode       = TIM_COUNTERMODE_UP;
     htim2.Init.Period            = MOTOR_PWM_MAX;
     htim2.Init.ClockDivision     = TIM_CLOCKDIVISION_DIV1;
@@ -351,19 +329,3 @@ void MX_TIM2_Init(void)
     HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_2);
 }
 
-void MX_USART2_UART_Init(void)
-{
-    __HAL_RCC_USART2_CLK_ENABLE();
-
-    huart2.Instance            = USART2;
-    huart2.Init.BaudRate       = 115200;
-    huart2.Init.WordLength     = UART_WORDLENGTH_8B;
-    huart2.Init.StopBits       = UART_STOPBITS_1;
-    huart2.Init.Parity         = UART_PARITY_NONE;
-    huart2.Init.Mode           = UART_MODE_TX_RX;
-    huart2.Init.HwFlowCtl      = UART_HWCONTROL_NONE;
-    huart2.Init.OverSampling   = UART_OVERSAMPLING_16;
-    huart2.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
-    huart2.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
-    HAL_UART_Init(&huart2);
-}

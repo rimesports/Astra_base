@@ -6,12 +6,12 @@
 #define MOTOR_LEFT_PWM_PIN      GPIO_PIN_0
 #define MOTOR_LEFT_PWM_PORT     GPIOA
 #define MOTOR_LEFT_DIR_PIN      GPIO_PIN_0
-#define MOTOR_LEFT_DIR_PORT     GPIOC
+#define MOTOR_LEFT_DIR_PORT     GPIOB
 
 #define MOTOR_RIGHT_PWM_PIN     GPIO_PIN_1
 #define MOTOR_RIGHT_PWM_PORT    GPIOA
 #define MOTOR_RIGHT_DIR_PIN     GPIO_PIN_1
-#define MOTOR_RIGHT_DIR_PORT    GPIOC
+#define MOTOR_RIGHT_DIR_PORT    GPIOB
 
 // Encoder pins
 #define ENCODER_LEFT_A_PIN      GPIO_PIN_3
@@ -29,10 +29,6 @@
 #define I2C_SCL_PORT            GPIOB
 #define I2C_SDA_PIN             GPIO_PIN_9
 #define I2C_SDA_PORT            GPIOB
-
-// BNO055 reset pin (active-low)
-#define BNO055_RST_PIN          GPIO_PIN_10
-#define BNO055_RST_PORT         GPIOB
 
 // UART pins
 #define UART_TX_PIN             GPIO_PIN_2
@@ -61,7 +57,7 @@
 #define INA219_I2C_ADDRESS      0x40
 
 // ─── FreeRTOS task priorities (higher number = higher priority) ───────────────
-// STM32L476 is single-core — priorities determine preemption order only.
+// STM32F411 is single-core — priorities determine preemption order only.
 // Safety-critical tasks (future: obstacle detection) should use 10+.
 #define TASK_CONTROL_PRIO       9   // motor PID loop — must run on time
 #define TASK_SERIAL_PRIO        6   // Jetson UART command handler

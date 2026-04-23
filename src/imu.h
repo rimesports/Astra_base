@@ -14,8 +14,8 @@ float imu_get_roll(void);
 float imu_get_pitch(void);
 float imu_get_yaw(void);
 float imu_get_temp(void);
-// Linear acceleration (m/s², gravity-compensated) and gyro (deg/s)
-// from BNO055 fusion output — used in T:1002 IMU snapshot
+// Linear acceleration (m/s², gravity-referenced) and gyro (deg/s)
+// from MPU-6050 complementary filter — used in T:1002 IMU snapshot
 float imu_get_ax(void);
 float imu_get_ay(void);
 float imu_get_az(void);
