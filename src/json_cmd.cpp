@@ -2,6 +2,7 @@
 #include "astra_config.h"
 #include "serial_cmd.h"
 #include "shared_state.h"
+#include "main.h"
 #include "imu.h"
 #include "ina219.h"
 #include "encoder.h"
@@ -290,7 +291,12 @@ void json_cmd_process_line(const char *line) {
     // TIM2 — must be running for PWM to work
     bool tim2_ok = ((TIM2->CR1 & TIM_CR1_CEN) != 0);
 
-    char buf[320];
+    // Stack watermarks (words remaining at high-water mark — higher = more headroom)
+    UBaseType_t stk_ctrl  = h_control   ? uxTaskGetStackHighWaterMark(h_control)   : 0;
+    UBaseType_t stk_ser   = h_serial    ? uxTaskGetStackHighWaterMark(h_serial)    : 0;
+    UBaseType_t stk_telem = h_telemetry ? uxTaskGetStackHighWaterMark(h_telemetry) : 0;
+
+    char buf[384];
     snprintf(buf, sizeof(buf),
       "{\"T\":200"
       ",\"tick\":%lu,\"tasks\":%lu"
@@ -299,13 +305,15 @@ void json_cmd_process_line(const char *line) {
       ",\"i2c_ina\":%s,\"batt_v\":%.2f,\"batt_ok\":%s"
       ",\"dir1\":%d,\"dir2\":%d"
       ",\"tim2\":%s"
+      ",\"stk_ctrl\":%lu,\"stk_ser\":%lu,\"stk_telem\":%lu"
       "}",
       tick, ntasks,
       imu_ack    ? "true" : "false", who, imu_id_ok  ? "true" : "false",
       imu_data_ok? "true" : "false", temp, temp_ok   ? "true" : "false",
       ina_ack    ? "true" : "false", batt_v, batt_ok ? "true" : "false",
       dir1 ? 1 : 0, dir2 ? 1 : 0,
-      tim2_ok    ? "true" : "false");
+      tim2_ok    ? "true" : "false",
+      (unsigned long)stk_ctrl, (unsigned long)stk_ser, (unsigned long)stk_telem);
     serial_send_line(buf);
     break;
   }
@@ -327,6 +335,16 @@ void json_cmd_process_line(const char *line) {
 // imu_update() at 50 Hz and writes g_state.roll/pitch/yaw/imu_temp each cycle.
 // Reading cached values avoids I2C bus contention between control_task (prio 9)
 // and telemetry_task (prio 2) even though the I2C mutex would protect correctness.
+//
+// Encoder tick delta (tl / tr):
+// g_state.tick_total_left/right are monotonically increasing totals written by
+// control_task. This function keeps static "last published" values and subtracts
+// to get the delta since the previous T:1001. No reset is needed so there is no
+// read-reset race with the higher-priority control_task.
+//
+// Jetson odometry conversion (ENCODER_COUNTS_PER_REV = 2150):
+//   distance_left  = (tl / 2150.0) * 2π * wheel_radius   [metres]
+//   distance_right = (tr / 2150.0) * 2π * wheel_radius
 
 void json_cmd_publish_telemetry(void) {
   ina219_read(&g_state.battery_voltage, &g_state.battery_current);
@@ -334,13 +352,23 @@ void json_cmd_publish_telemetry(void) {
   g_state.rpm_right = encoder_get_right_rpm();
   // g_state.roll/pitch/yaw/imu_temp written by control_task — use as-is
 
-  char buf[384];
+  // Compute encoder tick delta since last publish
+  static int32_t last_tl = 0;
+  static int32_t last_tr = 0;
+  int32_t tl = g_state.tick_total_left  - last_tl;
+  int32_t tr = g_state.tick_total_right - last_tr;
+  last_tl = g_state.tick_total_left;
+  last_tr = g_state.tick_total_right;
+
+  char buf[420];
   int len = snprintf(buf, sizeof(buf),
     "{\"T\":%d,\"L\":%.1f,\"R\":%.1f"
+    ",\"tl\":%ld,\"tr\":%ld"
     ",\"r\":%.1f,\"p\":%.1f,\"y\":%.1f"
     ",\"temp\":%.1f,\"v\":%.2f,\"i\":%.2f",
     FEEDBACK_BASE_INFO,
     g_state.rpm_left, g_state.rpm_right,
+    tl, tr,
     g_state.roll, g_state.pitch, g_state.yaw,
     g_state.imu_temp,
     g_state.battery_voltage, g_state.battery_current);

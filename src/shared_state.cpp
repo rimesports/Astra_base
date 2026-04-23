@@ -14,6 +14,8 @@ void shared_state_init(void) {
   g_state.last_command_ms = HAL_GetTick();
   g_state.rpm_left = 0.0f;
   g_state.rpm_right = 0.0f;
+  g_state.tick_total_left  = 0;
+  g_state.tick_total_right = 0;
   g_state.roll = 0.0f;
   g_state.pitch = 0.0f;
   g_state.yaw = 0.0f;

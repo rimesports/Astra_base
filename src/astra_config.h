@@ -64,7 +64,10 @@
 #define TASK_TELEMETRY_PRIO     2   // periodic T:1001 feedback — background
 
 // Stack sizes in words (1 word = 4 bytes on ARM)
-#define TASK_CONTROL_STACK      256  // 1 KB — minimal, no printf
+// control_task runs imu_update() which calls into HAL I2C + xSemaphoreTake;
+// the Cortex-M4 FP context save alone is 104 bytes. 512 words gives comfortable
+// headroom; check T:200 "stk_ctrl" watermark after bring-up and trim if desired.
+#define TASK_CONTROL_STACK      512  // 2 KB — imu/pid/encoder + HAL I2C call chain
 #define TASK_SERIAL_STACK       512  // 2 KB — JSON string parsing
 #define TASK_TELEMETRY_STACK    512  // 2 KB — snprintf + I2C reads
 

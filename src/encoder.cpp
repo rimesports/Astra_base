@@ -1,5 +1,6 @@
 #include "encoder.h"
 #include "astra_config.h"
+#include "shared_state.h"
 #include "stm32f4xx_hal.h"
 
 static volatile int32_t left_count = 0;
@@ -58,6 +59,12 @@ void encoder_update(void) {
   int32_t right_snapshot = right_count;
   left_count = 0;
   right_count = 0;
+
+  // Accumulate into monotonically increasing totals.
+  // telemetry_task subtracts its own last-seen value to get the per-packet
+  // delta — no reset needed, no race with the read in telemetry_task.
+  g_state.tick_total_left  += left_snapshot;
+  g_state.tick_total_right += right_snapshot;
 
   float left_revs = (float)left_snapshot / (float)ENCODER_COUNTS_PER_REV;
   float right_revs = (float)right_snapshot / (float)ENCODER_COUNTS_PER_REV;

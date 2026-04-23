@@ -21,6 +21,15 @@ typedef struct {
   float rpm_left;
   float rpm_right;
 
+  // Encoder tick totals — monotonically increasing (written by control_task via
+  // encoder_update(), read by telemetry_task to compute per-packet delta).
+  // Using a running total avoids a read-reset race between the two tasks:
+  // telemetry keeps its own "last published" value and subtracts each cycle.
+  // int32_t wraps after ±2.1 billion counts — at 2150 counts/rev that is
+  // roughly ±1 million wheel revolutions, far beyond any realistic mission.
+  int32_t tick_total_left;
+  int32_t tick_total_right;
+
   // IMU
   float roll;
   float pitch;

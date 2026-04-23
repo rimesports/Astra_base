@@ -47,6 +47,11 @@ static void control_task(void *arg);
 static void serial_task(void *arg);
 static void telemetry_task(void *arg);
 
+// Task handles — used by T:200 sysdiag to read stack watermarks
+TaskHandle_t h_control   = NULL;
+TaskHandle_t h_serial    = NULL;
+TaskHandle_t h_telemetry = NULL;
+
 // ─── FreeRTOS safety hooks ────────────────────────────────────────────────────
 // Both hooks stop the motors immediately and halt so a debugger can attach.
 
@@ -92,9 +97,9 @@ int main(void)
     serial_init();
 
     // Create tasks — scheduler not running yet, so these just enqueue
-    xTaskCreate(control_task,   "ctrl",  TASK_CONTROL_STACK,   NULL, TASK_CONTROL_PRIO,   NULL);
-    xTaskCreate(serial_task,    "ser",   TASK_SERIAL_STACK,    NULL, TASK_SERIAL_PRIO,    NULL);
-    xTaskCreate(telemetry_task, "telem", TASK_TELEMETRY_STACK, NULL, TASK_TELEMETRY_PRIO, NULL);
+    xTaskCreate(control_task,   "ctrl",  TASK_CONTROL_STACK,   NULL, TASK_CONTROL_PRIO,   &h_control);
+    xTaskCreate(serial_task,    "ser",   TASK_SERIAL_STACK,    NULL, TASK_SERIAL_PRIO,    &h_serial);
+    xTaskCreate(telemetry_task, "telem", TASK_TELEMETRY_STACK, NULL, TASK_TELEMETRY_PRIO, &h_telemetry);
 
     // Hand control to FreeRTOS — never returns
     vTaskStartScheduler();
