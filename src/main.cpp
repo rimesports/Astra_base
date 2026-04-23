@@ -33,6 +33,8 @@
 #include "FreeRTOS.h"
 #include "task.h"
 
+extern "C" volatile uint32_t g_boot_stage = 0;
+
 // ─── HAL peripheral handles (extern'd in main.h) ──────────────────────────────
 // hi2c1 is defined in i2c_bus.cpp — do not re-define here
 TIM_HandleTypeDef htim2;
@@ -77,34 +79,38 @@ extern "C" void vApplicationMallocFailedHook(void)
 
 int main(void)
 {
+    g_boot_stage = 1;
     // HAL + clocks
     HAL_Init();
+    g_boot_stage = 2;
     SystemClock_Config();
+    g_boot_stage = 3;
 
     // Peripheral hardware init — must complete before tasks start
     MX_GPIO_Init();
     MX_TIM2_Init();
+    g_boot_stage = 4;
     // USB CDC is initialised inside serial_init() via USBD_Init/Start.
     // USART2 is no longer used — communication is over USB-C (PA11/PA12).
 
-    // Module init
     shared_state_init();
-    i2c_bus_init();       // shared I2C — must precede ina219 and imu
+    g_boot_stage = 5;
+    serial_init();        // bring up USB CDC before optional peripheral probes
+    HAL_Delay(100);
+
     motor_ctrl_init();
     encoder_init();
-    imu_init();
-    ina219_init();
-    serial_init();
+    (void)i2c_bus_init();
+    (void)imu_init();
+    (void)ina219_init();
+    g_boot_stage = 6;
 
-    // Create tasks — scheduler not running yet, so these just enqueue
-    xTaskCreate(control_task,   "ctrl",  TASK_CONTROL_STACK,   NULL, TASK_CONTROL_PRIO,   &h_control);
-    xTaskCreate(serial_task,    "ser",   TASK_SERIAL_STACK,    NULL, TASK_SERIAL_PRIO,    &h_serial);
-    xTaskCreate(telemetry_task, "telem", TASK_TELEMETRY_STACK, NULL, TASK_TELEMETRY_PRIO, &h_telemetry);
-
-    // Hand control to FreeRTOS — never returns
+    xTaskCreate(control_task, "control", 512, NULL, 9, &h_control);
+    xTaskCreate(serial_task, "serial", 512, NULL, 6, &h_serial);
+    xTaskCreate(telemetry_task, "telemetry", 384, NULL, 2, &h_telemetry);
     vTaskStartScheduler();
 
-    // Unreachable; silences compiler warning
+    __disable_irq();
     while (1) {}
 }
 
@@ -374,24 +380,47 @@ void SystemClock_Config(void)
 {
     RCC_OscInitTypeDef RCC_OscInitStruct = {0};
     RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+    HAL_StatusTypeDef status;
 
-    // HSI 16 MHz → PLL → 96 MHz SYSCLK + 48 MHz USB
-    // PLL input = HSI / M = 16 / 8 = 2 MHz
-    // VCO       = 2 * N   = 2 * 192 = 384 MHz  (≤ 432 MHz — OK)
-    // SYSCLK    = VCO / P = 384 / 4 = 96 MHz
-    // USB48     = VCO / Q = 384 / 8 = 48 MHz   (required exact value for USB)
-    //
-    // Flash latency 3 WS required for SYSCLK > 90 MHz @ 3.3 V (RM0383 Table 6)
-    RCC_OscInitStruct.OscillatorType      = RCC_OSCILLATORTYPE_HSI;
-    RCC_OscInitStruct.HSIState            = RCC_HSI_ON;
-    RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+    // Prefer the external HSE when it is actually present on the board, but
+    // fall back to the previously verified HSI-derived USB clock if HSE does
+    // not start on this particular Black Pill revision.
+    __HAL_RCC_PWR_CLK_ENABLE();
+    __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
+
+    // First try HSE 25 MHz -> PLL -> 96 MHz SYSCLK + 48 MHz USB.
+    RCC_OscInitStruct.OscillatorType      = RCC_OSCILLATORTYPE_HSE;
+    RCC_OscInitStruct.HSEState            = RCC_HSE_ON;
     RCC_OscInitStruct.PLL.PLLState        = RCC_PLL_ON;
-    RCC_OscInitStruct.PLL.PLLSource       = RCC_PLLSOURCE_HSI;
-    RCC_OscInitStruct.PLL.PLLM            = 8;    // /8  → 2 MHz PLL input
-    RCC_OscInitStruct.PLL.PLLN            = 192;  // ×192 → 384 MHz VCO
-    RCC_OscInitStruct.PLL.PLLP            = RCC_PLLP_DIV4;  // /4 → 96 MHz SYSCLK
-    RCC_OscInitStruct.PLL.PLLQ            = 8;    // /8 → 48 MHz USB clock
-    HAL_RCC_OscConfig(&RCC_OscInitStruct);
+    RCC_OscInitStruct.PLL.PLLSource       = RCC_PLLSOURCE_HSE;
+    RCC_OscInitStruct.PLL.PLLM            = 25;
+    RCC_OscInitStruct.PLL.PLLN            = 192;
+    RCC_OscInitStruct.PLL.PLLP            = RCC_PLLP_DIV2;
+    RCC_OscInitStruct.PLL.PLLQ            = 4;
+    status = HAL_RCC_OscConfig(&RCC_OscInitStruct);
+
+    if (status != HAL_OK)
+    {
+        HAL_RCC_DeInit();
+
+        // Fallback: HSI 16 MHz -> PLL -> 96 MHz SYSCLK + 48 MHz USB.
+        RCC_OscInitStruct = {};
+        RCC_OscInitStruct.OscillatorType      = RCC_OSCILLATORTYPE_HSI;
+        RCC_OscInitStruct.HSIState            = RCC_HSI_ON;
+        RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+        RCC_OscInitStruct.PLL.PLLState        = RCC_PLL_ON;
+        RCC_OscInitStruct.PLL.PLLSource       = RCC_PLLSOURCE_HSI;
+        RCC_OscInitStruct.PLL.PLLM            = 8;
+        RCC_OscInitStruct.PLL.PLLN            = 192;
+        RCC_OscInitStruct.PLL.PLLP            = RCC_PLLP_DIV4;
+        RCC_OscInitStruct.PLL.PLLQ            = 8;
+        status = HAL_RCC_OscConfig(&RCC_OscInitStruct);
+        if (status != HAL_OK)
+        {
+            __disable_irq();
+            while (1) {}
+        }
+    }
 
     // APB1 max = 50 MHz on F411 → divide HCLK by 2 → APB1 = 48 MHz
     // TIM2 clock = 2 × APB1 = 96 MHz (hardware doubles when APB prescaler ≠ 1)
@@ -402,7 +431,11 @@ void SystemClock_Config(void)
     RCC_ClkInitStruct.AHBCLKDivider  = RCC_SYSCLK_DIV1;   // HCLK  = 96 MHz
     RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;     // APB1  = 48 MHz
     RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;     // APB2  = 96 MHz
-    HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_3);
+    if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_3) != HAL_OK)
+    {
+        __disable_irq();
+        while (1) {}
+    }
 }
 
 void MX_GPIO_Init(void)

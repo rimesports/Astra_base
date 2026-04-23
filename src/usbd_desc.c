@@ -5,6 +5,7 @@
 
 #include "usbd_desc.h"
 #include "usbd_conf.h"
+#include "usbd_ctlreq.h"
 #include <string.h>
 
 #define USBD_VID                    0x0483U
@@ -60,13 +61,11 @@ static void Get_SerialNum(void)
     uint32_t uid1 = *(uint32_t *)(UID_BASE + 4U);
     uint32_t uid2 = *(uint32_t *)(UID_BASE + 8U);
     uid0 += uid2;
-    if (USBD_StrDesc[2] != 0) {
+    if (uid0 != 0U) {
         IntToUnicode(uid0, &USBD_StrDesc[2], 8);
         IntToUnicode(uid1, &USBD_StrDesc[18], 4);
     }
 }
-
-static void USBD_UsrLog(const char *msg) { (void)msg; }
 
 // ─── Descriptor callbacks ─────────────────────────────────────────────────────
 

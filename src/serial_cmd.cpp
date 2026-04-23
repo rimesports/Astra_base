@@ -7,15 +7,18 @@
 
 #include "serial_cmd.h"
 #include "usbd_cdc_if.h"
+#include "usbd_conf.h"
 #include "usbd_desc.h"
 #include "usbd_cdc.h"
 #include <string.h>
 
 // ─── USB Device handle (referenced by usbd_cdc_if.c) ────────────────────────
 USBD_HandleTypeDef hUsbDeviceFS;
+extern "C" volatile uint32_t g_usb_stage = 0;
+extern "C" volatile uint32_t g_usb_status = 0;
 
 // ─── Line assembly buffer ─────────────────────────────────────────────────────
-#define SERIAL_BUFFER_SIZE  256
+#define SERIAL_BUFFER_SIZE  512
 
 static char   rx_buffer[SERIAL_BUFFER_SIZE];
 static size_t rx_index = 0;
@@ -35,12 +38,19 @@ void serial_init(void)
     rx_index  = 0;
     ring_head = 0;
     ring_tail = 0;
+    memset(&hUsbDeviceFS, 0, sizeof(hUsbDeviceFS));
     memset(rx_buffer, 0, sizeof(rx_buffer));
 
-    USBD_Init(&hUsbDeviceFS, &FS_Desc, DEVICE_FS);
-    USBD_RegisterClass(&hUsbDeviceFS, &USBD_CDC);
-    USBD_CDC_RegisterInterface(&hUsbDeviceFS, &USBD_Interface_fops_FS);
-    USBD_Start(&hUsbDeviceFS);
+    g_usb_stage = 1;
+    g_usb_status = USBD_Init(&hUsbDeviceFS, &FS_Desc, DEVICE_FS);
+    g_usb_stage = 2;
+    g_usb_status |= ((uint32_t)USBD_RegisterClass(&hUsbDeviceFS, &USBD_CDC)) << 8;
+    g_usb_stage = 3;
+    g_usb_status |= ((uint32_t)USBD_CDC_RegisterInterface(&hUsbDeviceFS, &USBD_Interface_fops_FS)) << 16;
+    g_usb_stage = 4;
+    g_usb_status |= ((uint32_t)USBD_Start(&hUsbDeviceFS)) << 24;
+    g_usb_stage = 5;
+
 }
 
 // ─── serial_read_line — called from serial_task ───────────────────────────────
@@ -77,7 +87,7 @@ int serial_read_line(char *buffer, size_t buffer_size)
 
 // ─── serial_send_line — called by json_cmd.cpp ────────────────────────────────
 // Copies the string into a static buffer and transmits via USB CDC.
-// Retries briefly if the previous transfer is still in flight.
+// Retries briefly if a previous transfer is still in flight.
 
 void serial_send_line(const char *line)
 {
@@ -89,11 +99,38 @@ void serial_send_line(const char *line)
     memcpy(tx_buf, line, len);
     tx_buf[len]     = '\n';
     tx_buf[len + 1] = '\0';
-
-    // Spin-wait up to ~5 ms if a previous transfer is in flight
     for (int retry = 0; retry < 50; retry++) {
         if (CDC_Transmit_FS(tx_buf, (uint16_t)(len + 1)) == USBD_OK) return;
         HAL_Delay(1);
     }
-    // Drop the packet if USB is not connected or persistently busy
+}
+
+uint8_t serial_usb_configured(void)
+{
+    return CDC_IsConfigured_FS();
+}
+
+uint8_t serial_usb_port_open(void)
+{
+    return CDC_IsPortOpen_FS();
+}
+
+uint32_t serial_usb_tx_dropped(void)
+{
+    return CDC_GetTxDropped_FS();
+}
+
+uint32_t serial_usb_rx_dropped(void)
+{
+    return CDC_GetRxDropped_FS();
+}
+
+uint32_t serial_usb_tx_queued(void)
+{
+    return CDC_GetTxQueued_FS();
+}
+
+uint32_t serial_usb_rx_queued(void)
+{
+    return CDC_GetRxQueued_FS();
 }

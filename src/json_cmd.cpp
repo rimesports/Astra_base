@@ -296,7 +296,14 @@ void json_cmd_process_line(const char *line) {
     UBaseType_t stk_ser   = h_serial    ? uxTaskGetStackHighWaterMark(h_serial)    : 0;
     UBaseType_t stk_telem = h_telemetry ? uxTaskGetStackHighWaterMark(h_telemetry) : 0;
 
-    char buf[384];
+    uint8_t usb_cfg = serial_usb_configured();
+    uint8_t usb_open = serial_usb_port_open();
+    uint32_t usb_tx_drop = serial_usb_tx_dropped();
+    uint32_t usb_rx_drop = serial_usb_rx_dropped();
+    uint32_t usb_tx_q = serial_usb_tx_queued();
+    uint32_t usb_rx_q = serial_usb_rx_queued();
+
+    char buf[512];
     snprintf(buf, sizeof(buf),
       "{\"T\":200"
       ",\"tick\":%lu,\"tasks\":%lu"
@@ -305,6 +312,9 @@ void json_cmd_process_line(const char *line) {
       ",\"i2c_ina\":%s,\"batt_v\":%.2f,\"batt_ok\":%s"
       ",\"dir1\":%d,\"dir2\":%d"
       ",\"tim2\":%s"
+      ",\"usb_cfg\":%s,\"usb_open\":%s"
+      ",\"usb_tx_q\":%lu,\"usb_rx_q\":%lu"
+      ",\"usb_tx_drop\":%lu,\"usb_rx_drop\":%lu"
       ",\"stk_ctrl\":%lu,\"stk_ser\":%lu,\"stk_telem\":%lu"
       "}",
       tick, ntasks,
@@ -313,6 +323,9 @@ void json_cmd_process_line(const char *line) {
       ina_ack    ? "true" : "false", batt_v, batt_ok ? "true" : "false",
       dir1 ? 1 : 0, dir2 ? 1 : 0,
       tim2_ok    ? "true" : "false",
+      usb_cfg    ? "true" : "false", usb_open ? "true" : "false",
+      (unsigned long)usb_tx_q, (unsigned long)usb_rx_q,
+      (unsigned long)usb_tx_drop, (unsigned long)usb_rx_drop,
       (unsigned long)stk_ctrl, (unsigned long)stk_ser, (unsigned long)stk_telem);
     serial_send_line(buf);
     break;

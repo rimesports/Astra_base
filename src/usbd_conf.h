@@ -35,8 +35,8 @@
 #define USB_MAX_EP0_SIZE             64U
 
 // ─── Memory management — standard heap ───────────────────────────────────────
-#define USBD_malloc   malloc
-#define USBD_free     free
+#define USBD_malloc   (void *)USBD_static_malloc
+#define USBD_free     USBD_static_free
 #define USBD_memset   memset
 #define USBD_memcpy   memcpy
 
@@ -48,3 +48,5 @@
 
 // ─── PCD handle — defined in usbd_conf.c ─────────────────────────────────────
 extern PCD_HandleTypeDef hpcd_USB_OTG_FS;
+void *USBD_static_malloc(uint32_t size);
+void USBD_static_free(void *p);

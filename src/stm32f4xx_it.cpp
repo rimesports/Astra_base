@@ -13,6 +13,39 @@
 #include "usbd_conf.h"   // hpcd_USB_OTG_FS
 
 extern "C" void xPortSysTickHandler(void);
+extern "C" volatile uint32_t g_hf_sp = 0;
+extern "C" volatile uint32_t g_hf_r0 = 0;
+extern "C" volatile uint32_t g_hf_r1 = 0;
+extern "C" volatile uint32_t g_hf_r2 = 0;
+extern "C" volatile uint32_t g_hf_r3 = 0;
+extern "C" volatile uint32_t g_hf_r12 = 0;
+extern "C" volatile uint32_t g_hf_lr = 0;
+extern "C" volatile uint32_t g_hf_pc = 0;
+extern "C" volatile uint32_t g_hf_xpsr = 0;
+extern "C" volatile uint32_t g_hf_cfsr = 0;
+extern "C" volatile uint32_t g_hf_hfsr = 0;
+extern "C" volatile uint32_t g_hf_bfar = 0;
+extern "C" volatile uint32_t g_hf_mmfar = 0;
+
+extern "C" void hardfault_capture(uint32_t *stack)
+{
+    g_hf_sp    = (uint32_t)stack;
+    g_hf_r0    = stack[0];
+    g_hf_r1    = stack[1];
+    g_hf_r2    = stack[2];
+    g_hf_r3    = stack[3];
+    g_hf_r12   = stack[4];
+    g_hf_lr    = stack[5];
+    g_hf_pc    = stack[6];
+    g_hf_xpsr  = stack[7];
+    g_hf_cfsr  = SCB->CFSR;
+    g_hf_hfsr  = SCB->HFSR;
+    g_hf_bfar  = SCB->BFAR;
+    g_hf_mmfar = SCB->MMFAR;
+
+    __disable_irq();
+    while (1) {}
+}
 
 extern "C" {
 
@@ -27,6 +60,17 @@ void SysTick_Handler(void)
 #if ( INCLUDE_xTaskGetSchedulerState == 1 )
     }
 #endif
+}
+
+void HardFault_Handler(void)
+{
+    __asm volatile(
+        "tst lr, #4        \n"
+        "ite eq            \n"
+        "mrseq r0, msp     \n"
+        "mrsne r0, psp     \n"
+        "b hardfault_capture\n"
+    );
 }
 
 // ─── USB OTG FS ───────────────────────────────────────────────────────────────

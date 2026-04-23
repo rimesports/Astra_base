@@ -5,7 +5,7 @@ Incoming data prints above; your typed command stays at the bottom.
 
 Usage:
     python tools/serial_console.py
-    python tools/serial_console.py --port COM5 --baud 115200
+    python tools/serial_console.py --port COM6 --baud 115200
 
 Quit: Ctrl+C
 """

@@ -5,8 +5,23 @@
 
 #include "usbd_conf.h"
 #include "usbd_core.h"
+#include "usbd_cdc.h"
 
 PCD_HandleTypeDef hpcd_USB_OTG_FS;
+static uint32_t usbd_cdc_mem[(sizeof(USBD_CDC_HandleTypeDef) + 3U) / 4U];
+
+void *USBD_static_malloc(uint32_t size)
+{
+    if (size > sizeof(usbd_cdc_mem)) {
+        return NULL;
+    }
+    return usbd_cdc_mem;
+}
+
+void USBD_static_free(void *p)
+{
+    (void)p;
+}
 
 // ─── HAL PCD MSP — GPIO + clock + NVIC ───────────────────────────────────────
 
@@ -23,9 +38,6 @@ void HAL_PCD_MspInit(PCD_HandleTypeDef *hpcd)
         GPIO_InitStruct.Alternate = GPIO_AF10_OTG_FS;
         HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
         __HAL_RCC_USB_OTG_FS_CLK_ENABLE();
-        // Priority 6 = same level as serial_task; no FreeRTOS FromISR APIs called
-        HAL_NVIC_SetPriority(OTG_FS_IRQn, 6, 0);
-        HAL_NVIC_EnableIRQ(OTG_FS_IRQn);
     }
 }
 
@@ -42,17 +54,26 @@ void HAL_PCD_MspDeInit(PCD_HandleTypeDef *hpcd)
 
 USBD_StatusTypeDef USBD_LL_Init(USBD_HandleTypeDef *pdev)
 {
+    memset(&hpcd_USB_OTG_FS, 0, sizeof(hpcd_USB_OTG_FS));
     hpcd_USB_OTG_FS.Instance                 = USB_OTG_FS;
     hpcd_USB_OTG_FS.Init.dev_endpoints       = 4;
+    hpcd_USB_OTG_FS.Init.Host_channels       = 0;
     hpcd_USB_OTG_FS.Init.speed               = PCD_SPEED_FULL;
     hpcd_USB_OTG_FS.Init.dma_enable          = DISABLE;
+    hpcd_USB_OTG_FS.Init.ep0_mps             = EP_MPS_64;
     hpcd_USB_OTG_FS.Init.phy_itface          = PCD_PHY_EMBEDDED;
     hpcd_USB_OTG_FS.Init.Sof_enable          = DISABLE;
     hpcd_USB_OTG_FS.Init.low_power_enable    = DISABLE;
     hpcd_USB_OTG_FS.Init.lpm_enable          = DISABLE;
+    hpcd_USB_OTG_FS.Init.battery_charging_enable = DISABLE;
     hpcd_USB_OTG_FS.Init.vbus_sensing_enable = DISABLE;  // no VBUS pin on Black Pill
     hpcd_USB_OTG_FS.Init.use_dedicated_ep1   = DISABLE;
-    HAL_PCD_Init(&hpcd_USB_OTG_FS);
+    hpcd_USB_OTG_FS.Init.use_external_vbus   = DISABLE;
+    pdev->pData = &hpcd_USB_OTG_FS;
+    hpcd_USB_OTG_FS.pData = pdev;
+    if (HAL_PCD_Init(&hpcd_USB_OTG_FS) != HAL_OK) {
+        return USBD_FAIL;
+    }
 
     // FIFO sizes (words) — STM32F411 OTG FS has 320 words (0x140) total RAM.
     //   RX       = 0x80 = 128  (shared by all OUT endpoints + SETUP packets)
@@ -60,13 +81,22 @@ USBD_StatusTypeDef USBD_LL_Init(USBD_HandleTypeDef *pdev)
     //   EP1 TX   = 0x40 =  64  (CDC bulk data IN, 64-byte packets)
     //   EP2 TX   = 0x10 =  16  (CDC command/notification IN, 8-byte packets)
     //   Total    = 0xE0 = 224  <= 320 — OK
-    HAL_PCDEx_SetRxFiFo(&hpcd_USB_OTG_FS,  0x80);
-    HAL_PCDEx_SetTxFiFo(&hpcd_USB_OTG_FS, 0, 0x10);
-    HAL_PCDEx_SetTxFiFo(&hpcd_USB_OTG_FS, 1, 0x40);
-    HAL_PCDEx_SetTxFiFo(&hpcd_USB_OTG_FS, 2, 0x10);
+    if (HAL_PCDEx_SetRxFiFo(&hpcd_USB_OTG_FS, 0x80) != HAL_OK) {
+        return USBD_FAIL;
+    }
+    if (HAL_PCDEx_SetTxFiFo(&hpcd_USB_OTG_FS, 0, 0x10) != HAL_OK) {
+        return USBD_FAIL;
+    }
+    if (HAL_PCDEx_SetTxFiFo(&hpcd_USB_OTG_FS, 1, 0x40) != HAL_OK) {
+        return USBD_FAIL;
+    }
+    if (HAL_PCDEx_SetTxFiFo(&hpcd_USB_OTG_FS, 2, 0x10) != HAL_OK) {
+        return USBD_FAIL;
+    }
 
-    pdev->pData = &hpcd_USB_OTG_FS;   // USBD_LL_* → HAL_PCD_*
-    hpcd_USB_OTG_FS.pData = pdev;     // HAL_PCD_*Callback → USBD_LL_*
+    HAL_NVIC_ClearPendingIRQ(OTG_FS_IRQn);
+    HAL_NVIC_SetPriority(OTG_FS_IRQn, 6, 0);
+    HAL_NVIC_EnableIRQ(OTG_FS_IRQn);
     return USBD_OK;
 }
 
