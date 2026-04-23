@@ -15,7 +15,7 @@ import serial
 import sys
 import threading
 
-PORT = "COM5"
+PORT = "COM6"
 BAUD = 115200
 
 _stdout_lock = threading.Lock()
@@ -43,29 +43,37 @@ def main():
     print(f"Connecting to {args.port} @ {args.baud} baud  (Ctrl+C to quit)")
     print("-" * 50)
     print("Quick commands:")
-    print('  stop     ->  {"T":130,"cmd":0}   disable telemetry')
-    print('  start    ->  {"T":130,"cmd":1}   enable telemetry')
-    print('  echo     ->  {"T":143,"cmd":"hello"}')
-    print('  imu      ->  {"T":126}')
-    print('  piddbg   ->  {"T":132,"cmd":1}   enable PID debug fields')
-    print('  pidoff   ->  {"T":132,"cmd":0}   disable PID debug fields')
+    print('  diag     ->  {"T":200}             system health + stack watermarks')
+    print('  i2c      ->  {"T":127}             I2C spot-check (MPU-6050 + INA219)')
+    print('  echo     ->  {"T":143}             connectivity check')
+    print('  imu      ->  {"T":126}             IMU snapshot (T:1002 response)')
+    print('  cal      ->  {"T":160}             IMU calibration (keep robot still)')
+    print('  start    ->  {"T":131,"cmd":1,"interval":100}   enable 10 Hz telemetry')
+    print('  fast     ->  {"T":131,"cmd":1,"interval":20}    enable 50 Hz telemetry')
+    print('  stop     ->  {"T":130,"cmd":0}     disable telemetry')
+    print('  piddbg   ->  {"T":132,"cmd":1}     enable PID debug fields in T:1001')
+    print('  pidoff   ->  {"T":132,"cmd":0}     disable PID debug fields')
     print('  fwd      ->  {"T":1,"L":0.3,"R":0.3}')
     print('  rev      ->  {"T":1,"L":-0.3,"R":-0.3}')
     print('  spin     ->  {"T":1,"L":0.3,"R":-0.3}')
-    print('  x        ->  {"T":1,"L":0,"R":0}   stop motors')
+    print('  x        ->  {"T":1,"L":0,"R":0}  stop motors')
     print("-" * 50)
 
     shortcuts = {
-        "stop": '{"T":130,"cmd":0}',
-        "start": '{"T":130,"cmd":1}',
-        "echo": '{"T":143,"cmd":"hello"}',
-        "imu": '{"T":126}',
+        "diag":   '{"T":200}',
+        "i2c":    '{"T":127}',
+        "echo":   '{"T":143}',
+        "imu":    '{"T":126}',
+        "cal":    '{"T":160}',
+        "start":  '{"T":131,"cmd":1,"interval":100}',
+        "fast":   '{"T":131,"cmd":1,"interval":20}',
+        "stop":   '{"T":130,"cmd":0}',
         "piddbg": '{"T":132,"cmd":1}',
         "pidoff": '{"T":132,"cmd":0}',
-        "fwd": '{"T":1,"L":0.3,"R":0.3}',
-        "rev": '{"T":1,"L":-0.3,"R":-0.3}',
-        "spin": '{"T":1,"L":0.3,"R":-0.3}',
-        "x": '{"T":1,"L":0,"R":0}',
+        "fwd":    '{"T":1,"L":0.3,"R":0.3}',
+        "rev":    '{"T":1,"L":-0.3,"R":-0.3}',
+        "spin":   '{"T":1,"L":0.3,"R":-0.3}',
+        "x":      '{"T":1,"L":0,"R":0}',
     }
 
     try:
