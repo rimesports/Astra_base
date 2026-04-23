@@ -243,6 +243,20 @@ void json_cmd_process_line(const char *line) {
     break;
   }
 
+  // ── T:132  PID debug telemetry toggle ─────────────────────────────────────
+  // {"T":132,"cmd":1}  enable   {"T":132,"cmd":0}  disable
+  // When enabled, T:1001 feedback gains extra fields — see pid_tuning_guide.md.
+  case CMD_PID_DEBUG: {
+    int cmd = 0;
+    if (parse_json_int(line, "cmd", &cmd)) {
+      g_state.pid_debug_enabled = (cmd == 1);
+      char buf[64];
+      snprintf(buf, sizeof(buf), "{\"T\":132,\"ack\":true,\"cmd\":%d}", cmd == 1 ? 1 : 0);
+      serial_send_line(buf);
+    }
+    break;
+  }
+
   // ── T:200  System self-diagnostic ────────────────────────────────────────
   // {"T":200}  → one-shot health snapshot, no side-effects
   case CMD_SYSDIAG: {
@@ -320,16 +334,36 @@ void json_cmd_publish_telemetry(void) {
   g_state.rpm_right = encoder_get_right_rpm();
   // g_state.roll/pitch/yaw/imu_temp written by control_task — use as-is
 
-  char buf[256];
+  char buf[384];
   int len = snprintf(buf, sizeof(buf),
     "{\"T\":%d,\"L\":%.1f,\"R\":%.1f"
     ",\"r\":%.1f,\"p\":%.1f,\"y\":%.1f"
-    ",\"temp\":%.1f,\"v\":%.2f,\"i\":%.2f}",
+    ",\"temp\":%.1f,\"v\":%.2f,\"i\":%.2f",
     FEEDBACK_BASE_INFO,
     g_state.rpm_left, g_state.rpm_right,
     g_state.roll, g_state.pitch, g_state.yaw,
     g_state.imu_temp,
     g_state.battery_voltage, g_state.battery_current);
+
+  if (len > 0 && g_state.pid_debug_enabled) {
+    len += snprintf(buf + len, sizeof(buf) - (size_t)len,
+      ",\"pl\":%.1f,\"pr\":%.1f"
+      ",\"ol\":%.1f,\"or\":%.1f"
+      ",\"il\":%.2f,\"ir\":%.2f"
+      ",\"shl\":%d,\"shr\":%d"
+      ",\"sll\":%d,\"slr\":%d"
+      ",\"ifl\":%d,\"ifr\":%d",
+      g_state.pid_profiled_left, g_state.pid_profiled_right,
+      g_state.pid_output_left, g_state.pid_output_right,
+      g_state.pid_integrator_left, g_state.pid_integrator_right,
+      g_state.pid_sat_high_left ? 1 : 0, g_state.pid_sat_high_right ? 1 : 0,
+      g_state.pid_sat_low_left ? 1 : 0, g_state.pid_sat_low_right ? 1 : 0,
+      g_state.pid_i_freeze_left ? 1 : 0, g_state.pid_i_freeze_right ? 1 : 0);
+  }
+
+  if (len > 0) {
+    len += snprintf(buf + len, sizeof(buf) - (size_t)len, "}");
+  }
 
   if (len > 0) serial_send_line(buf);
 }

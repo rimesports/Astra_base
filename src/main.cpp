@@ -134,6 +134,12 @@ int main(void)
 //     A step setpoint change spikes Δerror but the motor cannot accelerate
 //     instantly, so Δmeasurement stays smooth — no "derivative kick".
 //
+//  4. Saturation-aware anti-windup:
+//     Integrator is frozen when the output is already at its limit AND the
+//     error still pushes further into saturation.  Prevents the integrator
+//     from charging against a saturated actuator, which causes overshoot when
+//     the motor finally catches up.  A hard clamp remains as a safety bound.
+//
 //  IMU update:
 //  imu_update() is called here at 50 Hz so the complementary filter runs at
 //  a consistent rate. Telemetry and on-demand queries read the cached values
@@ -194,6 +200,18 @@ static void control_task(void *arg)
             pid_reset(&pid_right);
             profiled_l = 0.0f;
             profiled_r = 0.0f;
+            g_state.pid_profiled_left = 0.0f;
+            g_state.pid_profiled_right = 0.0f;
+            g_state.pid_output_left = 0.0f;
+            g_state.pid_output_right = 0.0f;
+            g_state.pid_integrator_left = 0.0f;
+            g_state.pid_integrator_right = 0.0f;
+            g_state.pid_sat_high_left = false;
+            g_state.pid_sat_high_right = false;
+            g_state.pid_sat_low_left = false;
+            g_state.pid_sat_low_right = false;
+            g_state.pid_i_freeze_left = false;
+            g_state.pid_i_freeze_right = false;
         }
         // ── T:11 direct PWM — bypass PID ────────────────────────────────────
         else if (g_state.direct_pwm_mode)
@@ -208,6 +226,18 @@ static void control_task(void *arg)
             pid_reset(&pid_right);
             profiled_l = 0.0f;
             profiled_r = 0.0f;
+            g_state.pid_profiled_left = 0.0f;
+            g_state.pid_profiled_right = 0.0f;
+            g_state.pid_output_left = (float)sl;
+            g_state.pid_output_right = (float)sr;
+            g_state.pid_integrator_left = 0.0f;
+            g_state.pid_integrator_right = 0.0f;
+            g_state.pid_sat_high_left = false;
+            g_state.pid_sat_high_right = false;
+            g_state.pid_sat_low_left = false;
+            g_state.pid_sat_low_right = false;
+            g_state.pid_i_freeze_left = false;
+            g_state.pid_i_freeze_right = false;
         }
         // ── Velocity PID — T:1 / T:13 ───────────────────────────────────────
         else
@@ -246,6 +276,18 @@ static void control_task(void *arg)
             int16_t cmd_l = (int16_t)CLAMP(out_l, -100.0f, 100.0f);
             int16_t cmd_r = (int16_t)CLAMP(out_r, -100.0f, 100.0f);
             motor_ctrl_set_speed(cmd_l, cmd_r);
+            g_state.pid_profiled_left = profiled_l;
+            g_state.pid_profiled_right = profiled_r;
+            g_state.pid_output_left = pid_left.last_output;
+            g_state.pid_output_right = pid_right.last_output;
+            g_state.pid_integrator_left = pid_left.integrator;
+            g_state.pid_integrator_right = pid_right.integrator;
+            g_state.pid_sat_high_left = pid_left.last_saturated_high != 0;
+            g_state.pid_sat_high_right = pid_right.last_saturated_high != 0;
+            g_state.pid_sat_low_left = pid_left.last_saturated_low != 0;
+            g_state.pid_sat_low_right = pid_right.last_saturated_low != 0;
+            g_state.pid_i_freeze_left = pid_left.last_integrator_frozen != 0;
+            g_state.pid_i_freeze_right = pid_right.last_integrator_frozen != 0;
         }
     }
 }
@@ -430,4 +472,3 @@ void MX_TIM2_Init(void)
     HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_1);
     HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_2);
 }
-
