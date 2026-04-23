@@ -43,6 +43,18 @@ extern "C" void hardfault_capture(uint32_t *stack)
     g_hf_bfar  = SCB->BFAR;
     g_hf_mmfar = SCB->MMFAR;
 
+    // Persist to RTC backup registers — survives IWDG reset so T:201 can report it next boot.
+    // Direct register access only — no HAL calls that could fault again.
+    RCC->APB1ENR |= RCC_APB1ENR_PWREN;  // enable PWR clock
+    PWR->CR      |= PWR_CR_DBP;          // disable backup domain write protection
+    RTC->BKP0R    = 0xDEADBEEFU;         // magic: hardfault occurred
+    RTC->BKP1R    = g_hf_pc;
+    RTC->BKP2R    = g_hf_lr;
+    RTC->BKP3R    = g_hf_cfsr;
+    RTC->BKP4R    = g_hf_hfsr;
+    RTC->BKP5R   += 1;                   // cumulative boot-fault counter
+    RTC->BKP6R    = 0;                   // fault type 0 = HardFault
+
     __disable_irq();
     while (1) {}
 }

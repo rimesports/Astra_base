@@ -5,6 +5,29 @@
 RobotState g_state;
 
 void shared_state_init(void) {
+  // Detect reset cause before clearing flags (must happen before CLEAR_RESET_FLAGS)
+  __HAL_RCC_PWR_CLK_ENABLE();
+  HAL_PWR_EnableBkUpAccess();
+
+  g_state.fault_flags = 0;
+  if (__HAL_RCC_GET_FLAG(RCC_FLAG_IWDGRST)) {
+    g_state.fault_flags |= FAULT_IWDG_RESET;
+  }
+  __HAL_RCC_CLEAR_RESET_FLAGS();
+
+  // Check RTC BKP magic — set by hardfault_capture, survives watchdog reset
+  if (RTC->BKP0R == HF_BKP_MAGIC_VAL) {
+    g_state.fault_flags |= FAULT_HARDFAULT;
+  }
+
+  g_state.sys_state = SYS_IDLE;
+  g_state.heartbeat_fault_notify = false;
+  g_state.pid_kp = PID_KP;
+  g_state.pid_ki = PID_KI;
+  g_state.pid_kd = PID_KD;
+  g_state.pid_kf = PID_KF;
+  g_state.pid_gains_pending = false;
+
   g_state.target_left = 0;
   g_state.target_right = 0;
   g_state.direct_pwm_mode = false;
@@ -43,4 +66,7 @@ void shared_state_init(void) {
 void shared_state_feed_heartbeat(void) {
   g_state.command_received = true;
   g_state.last_command_ms = HAL_GetTick();
+  if (g_state.sys_state == SYS_IDLE) {
+    g_state.sys_state = SYS_RUNNING;
+  }
 }

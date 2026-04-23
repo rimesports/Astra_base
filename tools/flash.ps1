@@ -15,7 +15,7 @@ try {
 
     $openocd = Join-Path $env:USERPROFILE ".platformio\\packages\\tool-openocd\\bin\\openocd.exe"
     if (Test-Path $openocd) {
-        & $openocd -f interface/stlink.cfg -f target/stm32f4x.cfg -c "init" -c "resume" -c "shutdown"
+        & $openocd -f interface/stlink.cfg -f target/stm32f4x.cfg -c "init" -c "reset run" -c "shutdown"
     }
 }
 finally {

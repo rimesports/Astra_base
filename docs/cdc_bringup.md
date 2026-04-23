@@ -518,3 +518,175 @@ So the current conclusion is:
 - the GitHub-inspired CDC runtime changes are working and improve observability
 - live CDC traffic is stable in the tested scenarios
 - the remaining rough edge is the post-flash recovery path, not the steady-state CDC transport
+
+---
+
+## Production Readiness Review of the 7 Gaps
+
+From a production firmware standpoint, the 7 implemented gaps are reasonable and directionally correct. They are not "extra features" so much as the kinds of reliability, diagnosability, and field-serviceability work that usually separates a lab prototype from a deployable embedded controller.
+
+### Overall Assessment
+
+- Gap 1, hardware watchdog, is standard production hygiene on an autonomous or semi-autonomous robot.
+- Gap 2, explicit fault state tracking, is a good foundation for safe degraded behavior.
+- Gap 3, persistent hardfault breadcrumbs, is high-value for root-causing field resets.
+- Gap 4, flash-backed configuration, is a normal requirement once tuning moves out of compile time.
+- Gap 5, telemetry CRC and sequence counters, is a reasonable integrity/observability upgrade for host-controlled systems.
+- Gap 6, heartbeat fault notification, is appropriate because the host should be told when the robot entered failsafe.
+- Gap 7, runtime PID get/set, is practical for tuning, service, and controlled field updates.
+
+### Why These Are Reasonable
+
+- They address common production risks directly:
+  - silent lockups
+  - unrecoverable mystery resets
+  - loss of tuned parameters
+  - undetected telemetry gaps
+  - poor host visibility into safety-state transitions
+- They improve both reliability and debuggability without changing the external robot-control model drastically.
+- They match normal embedded production priorities: fail safe, preserve evidence, expose health, and support controlled runtime calibration.
+
+### Main Production Caveats
+
+These features are good, but they still require hardening discipline:
+
+- watchdog enable/refresh behavior must be validated around boot, debug, and RTOS scheduling
+- runtime parameter writes need bounds checking and clearly defined apply/persist semantics
+- flash persistence should remain versioned and corruption-safe
+- shared-state updates between tasks should stay race-aware as complexity grows
+- protocol evolution should eventually include explicit host/device version compatibility
+
+### Bottom Line
+
+The 7 gaps are a reasonable production roadmap and worth keeping. The work remaining is mostly hardening and validation, not rethinking whether these capabilities belong in the firmware.
+
+---
+
+## Remaining Production Software Gaps
+
+The 7 reliability gaps were a strong step forward, but they do not by themselves make the firmware "production complete". The following software-engineering gaps still remain for the current code structure.
+
+### 1. Firmware and Protocol Versioning
+
+The running firmware should expose:
+
+- firmware version
+- protocol version
+- board ID / hardware variant
+- config schema version
+- build identity such as git hash or build timestamp
+
+This is separate from source-control hygiene. It matters because the Jetson and STM32 need an explicit compatibility contract.
+
+### 2. Release / Change Control
+
+Source control is absolutely one of the production gaps, but it should be framed more broadly as release discipline:
+
+- tagged firmware releases
+- traceable change history
+- rollback points
+- documented release procedure
+- stable build artifact naming
+
+Git solves part of this, but the production need is broader than "just use version control".
+
+### 3. Automated Test Coverage
+
+The project still lacks a meaningful automated test layer. High-value additions would be:
+
+- JSON command parser tests
+- config-store checksum/version tests
+- CRC test vectors
+- watchdog and fault-path smoke tests
+- host-device protocol compatibility tests
+
+Without this, regressions are still caught mostly by manual bring-up and bench validation.
+
+### 4. Shared-State Concurrency Discipline
+
+The firmware currently relies heavily on `g_state` shared across tasks. That is workable at this size, but it is a production risk as the system grows.
+
+Areas to harden later:
+
+- clarify field ownership by task
+- identify fields that need atomicity or critical sections
+- reduce cross-task write/write coupling
+- consider message-passing for larger future features
+
+### 5. Input Validation and Safety Bounds
+
+Several host commands still accept runtime values with minimal enforcement. Production firmware should reject:
+
+- out-of-range PID gains
+- invalid intervals
+- malformed or incomplete command payloads
+- values that could drive unsafe behavior
+
+This should include explicit negative acknowledgements, not silent ignore paths.
+
+### 6. Config Lifecycle Hardening
+
+`config_store` already has magic/version/checksum, which is a solid start. Remaining gaps include:
+
+- migration rules across schema changes
+- wear strategy
+- fallback behavior for corrupt data
+- separation of runtime-only vs persisted fields
+- optional dual-copy / last-known-good approach
+
+### 7. Fault Policy and Recovery Rules
+
+The firmware now captures faults, but production behavior should also define:
+
+- which faults are latched
+- which faults auto-clear
+- what commands are allowed in fault state
+- how repeated boot faults are handled
+- when the system should remain in degraded mode vs normal mode
+
+### 8. Host-Device Contract Stability
+
+The Jetson-facing JSON protocol is now important enough that it should be treated as a maintained interface.
+
+Production gaps here include:
+
+- stable command/telemetry schema
+- explicit deprecation rules
+- protocol compatibility testing
+- documented required vs optional fields
+
+### 9. Operational Observability
+
+`T:200` is already useful, but production observability would benefit from a more deliberate model:
+
+- reset cause
+- reboot counters
+- config version
+- last fault
+- last command time
+- last error/event codes
+
+This reduces the need for ad hoc debug instrumentation during field issues.
+
+### 10. Security and Update Governance
+
+Not every project needs strong security immediately, but production firmware should eventually answer:
+
+- who is allowed to change gains
+- who is allowed to clear faults
+- who is allowed to push firmware updates
+- how update authenticity is verified
+
+For now this can remain a planned gap, but it should be explicitly tracked.
+
+### Suggested Priority
+
+If these are tackled later, a practical order would be:
+
+1. firmware/protocol versioning
+2. automated tests
+3. input validation and config hardening
+4. shared-state concurrency cleanup
+5. fault policy formalization
+6. release/change-control workflow
+7. expanded observability and update governance

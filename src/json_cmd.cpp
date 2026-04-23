@@ -2,6 +2,7 @@
 #include "astra_config.h"
 #include "serial_cmd.h"
 #include "shared_state.h"
+#include "config_store.h"
 #include "main.h"
 #include "imu.h"
 #include "ina219.h"
@@ -13,6 +14,22 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+
+// HardFault capture registers from stm32f4xx_it.cpp
+extern volatile uint32_t g_hf_pc, g_hf_lr, g_hf_xpsr;
+extern volatile uint32_t g_hf_cfsr, g_hf_hfsr, g_hf_bfar, g_hf_mmfar;
+
+static uint16_t crc16_ccitt(const uint8_t *data, size_t len)
+{
+    uint16_t crc = 0xFFFF;
+    for (size_t i = 0; i < len; i++) {
+        crc ^= (uint16_t)data[i] << 8;
+        for (int j = 0; j < 8; j++) {
+            crc = (crc & 0x8000u) ? (uint16_t)((crc << 1) ^ 0x1021u) : (uint16_t)(crc << 1);
+        }
+    }
+    return crc;
+}
 
 // ─── Minimal JSON helpers (no heap allocation) ────────────────────────────────
 
@@ -336,6 +353,134 @@ void json_cmd_process_line(const char *line) {
     serial_send_line(line);
     break;
 
+  // ── T:201  HardFault register dump ────────────────────────────────────────
+  // Reads RTC backup registers written by hardfault_capture().
+  // valid=true means a hardfault occurred in a previous run.
+  case CMD_HF_DUMP: {
+    __HAL_RCC_PWR_CLK_ENABLE();
+    HAL_PWR_EnableBkUpAccess();
+    uint32_t magic   = RTC->BKP0R;
+    uint32_t hf_pc   = RTC->BKP1R;
+    uint32_t hf_lr   = RTC->BKP2R;
+    uint32_t hf_cfsr = RTC->BKP3R;
+    uint32_t hf_hfsr = RTC->BKP4R;
+    uint32_t hf_cnt  = RTC->BKP5R;
+    uint32_t hf_type = RTC->BKP6R;
+    static const char *type_str[] = {"hardfault", "stack_overflow", "malloc_failed"};
+    const char *ts = (hf_type < 3) ? type_str[hf_type] : "unknown";
+    char buf[256];
+    snprintf(buf, sizeof(buf),
+      "{\"T\":201,\"valid\":%s,\"type\":\"%s\""
+      ",\"pc\":\"0x%08lX\",\"lr\":\"0x%08lX\""
+      ",\"cfsr\":\"0x%08lX\",\"hfsr\":\"0x%08lX\""
+      ",\"cnt\":%lu,\"faults\":\"0x%lX\"}",
+      magic == HF_BKP_MAGIC_VAL ? "true" : "false", ts,
+      hf_pc, hf_lr, hf_cfsr, hf_hfsr,
+      hf_cnt, g_state.fault_flags);
+    serial_send_line(buf);
+    break;
+  }
+
+  // ── T:210  Clear fault flags and fault BKP magic ──────────────────────────
+  case CMD_FAULT_CLEAR: {
+    g_state.fault_flags = 0;
+    g_state.sys_state   = SYS_IDLE;
+    __HAL_RCC_PWR_CLK_ENABLE();
+    HAL_PWR_EnableBkUpAccess();
+    RTC->BKP0R = 0;   // clear magic so T:201 shows valid=false
+    // BKP5R (cumulative fault count) is intentionally preserved
+    serial_send_line("{\"T\":210,\"ack\":true}");
+    break;
+  }
+
+  // ── T:220  Save PID config to flash sector 7 ──────────────────────────────
+  case CMD_CONFIG_SAVE: {
+    ConfigData cfg = {};
+    cfg.kp = g_state.pid_kp;
+    cfg.ki = g_state.pid_ki;
+    cfg.kd = g_state.pid_kd;
+    cfg.kf = g_state.pid_kf;
+    bool ok = config_store_save(&cfg);
+    char buf[48];
+    snprintf(buf, sizeof(buf), "{\"T\":220,\"ok\":%s}", ok ? "true" : "false");
+    serial_send_line(buf);
+    break;
+  }
+
+  // ── T:221  Load config from flash and apply gains ─────────────────────────
+  case CMD_CONFIG_LOAD: {
+    ConfigData cfg;
+    bool ok = config_store_load(&cfg);
+    if (ok) {
+      g_state.pid_kp = cfg.kp;
+      g_state.pid_ki = cfg.ki;
+      g_state.pid_kd = cfg.kd;
+      g_state.pid_kf = cfg.kf;
+      g_state.pid_gains_pending = true;
+    }
+    char buf[48];
+    snprintf(buf, sizeof(buf), "{\"T\":221,\"ok\":%s}", ok ? "true" : "false");
+    serial_send_line(buf);
+    break;
+  }
+
+  // ── T:222  Dump current runtime config (no save) ──────────────────────────
+  case CMD_CONFIG_DUMP: {
+    char buf[160];
+    snprintf(buf, sizeof(buf),
+      "{\"T\":222,\"kp\":%.4f,\"ki\":%.4f,\"kd\":%.4f,\"kf\":%.4f"
+      ",\"state\":%d,\"faults\":\"0x%lX\"}",
+      g_state.pid_kp, g_state.pid_ki, g_state.pid_kd, g_state.pid_kf,
+      (int)g_state.sys_state, g_state.fault_flags);
+    serial_send_line(buf);
+    break;
+  }
+
+  // ── T:223  Reset config to compile-time defaults ──────────────────────────
+  case CMD_CONFIG_RESET: {
+    g_state.pid_kp = PID_KP;
+    g_state.pid_ki = PID_KI;
+    g_state.pid_kd = PID_KD;
+    g_state.pid_kf = PID_KF;
+    g_state.pid_gains_pending = true;
+    serial_send_line("{\"T\":223,\"ack\":true}");
+    break;
+  }
+
+  // ── T:240  Get current PID gains ──────────────────────────────────────────
+  case CMD_PID_GET: {
+    char buf[96];
+    snprintf(buf, sizeof(buf),
+      "{\"T\":240,\"kp\":%.4f,\"ki\":%.4f,\"kd\":%.4f,\"kf\":%.4f}",
+      g_state.pid_kp, g_state.pid_ki, g_state.pid_kd, g_state.pid_kf);
+    serial_send_line(buf);
+    break;
+  }
+
+  // ── T:241  Set PID gains — applied by control_task next cycle ─────────────
+  // {"T":241,"kp":0.3,"ki":0.8,"kd":0.0,"kf":0.5}
+  case CMD_PID_SET: {
+    float kp = 0, ki = 0, kd = 0, kf = 0;
+    bool ok = parse_json_float(line, "kp", &kp) &&
+              parse_json_float(line, "ki", &ki) &&
+              parse_json_float(line, "kd", &kd) &&
+              parse_json_float(line, "kf", &kf);
+    if (ok) {
+      g_state.pid_kp = kp;
+      g_state.pid_ki = ki;
+      g_state.pid_kd = kd;
+      g_state.pid_kf = kf;
+      g_state.pid_gains_pending = true;
+    }
+    char buf[96];
+    snprintf(buf, sizeof(buf),
+      "{\"T\":241,\"ok\":%s,\"kp\":%.4f,\"ki\":%.4f,\"kd\":%.4f,\"kf\":%.4f}",
+      ok ? "true" : "false",
+      g_state.pid_kp, g_state.pid_ki, g_state.pid_kd, g_state.pid_kf);
+    serial_send_line(buf);
+    break;
+  }
+
   default:
     break;
   }
@@ -360,12 +505,12 @@ void json_cmd_process_line(const char *line) {
 //   distance_right = (tr / 2150.0) * 2π * wheel_radius
 
 void json_cmd_publish_telemetry(void) {
+  static uint16_t seq = 0;
+
   ina219_read(&g_state.battery_voltage, &g_state.battery_current);
   g_state.rpm_left  = encoder_get_left_rpm();
   g_state.rpm_right = encoder_get_right_rpm();
-  // g_state.roll/pitch/yaw/imu_temp written by control_task — use as-is
 
-  // Compute encoder tick delta since last publish
   static int32_t last_tl = 0;
   static int32_t last_tr = 0;
   int32_t tl = g_state.tick_total_left  - last_tl;
@@ -373,7 +518,7 @@ void json_cmd_publish_telemetry(void) {
   last_tl = g_state.tick_total_left;
   last_tr = g_state.tick_total_right;
 
-  char buf[420];
+  char buf[480];
   int len = snprintf(buf, sizeof(buf),
     "{\"T\":%d,\"L\":%.1f,\"R\":%.1f"
     ",\"tl\":%ld,\"tr\":%ld"
@@ -402,8 +547,15 @@ void json_cmd_publish_telemetry(void) {
       g_state.pid_i_freeze_left ? 1 : 0, g_state.pid_i_freeze_right ? 1 : 0);
   }
 
+  // Sequence ID — Jetson uses this to detect dropped packets
   if (len > 0) {
-    len += snprintf(buf + len, sizeof(buf) - (size_t)len, "}");
+    len += snprintf(buf + len, sizeof(buf) - (size_t)len, ",\"seq\":%u", seq++);
+  }
+
+  // CRC16-CCITT over all bytes written so far (before closing })
+  if (len > 0) {
+    uint16_t crc = crc16_ccitt((const uint8_t *)buf, (size_t)len);
+    len += snprintf(buf + len, sizeof(buf) - (size_t)len, ",\"crc\":%u}", crc);
   }
 
   if (len > 0) serial_send_line(buf);

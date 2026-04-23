@@ -67,7 +67,7 @@
 // control_task runs imu_update() which calls into HAL I2C + xSemaphoreTake;
 // the Cortex-M4 FP context save alone is 104 bytes. 512 words gives comfortable
 // headroom; check T:200 "stk_ctrl" watermark after bring-up and trim if desired.
-#define TASK_CONTROL_STACK      512  // 2 KB — imu/pid/encoder + HAL I2C call chain
+#define TASK_CONTROL_STACK      1024 // 4 KB — control loop + HAL I2C + watchdog + fault paths
 #define TASK_SERIAL_STACK       512  // 2 KB — JSON string parsing
 #define TASK_TELEMETRY_STACK    512  // 2 KB — snprintf + I2C reads
 
@@ -122,6 +122,34 @@
 #define FEEDBACK_IMU_DATA       1002    // T:1002 IMU snapshot
 
 #define CMD_SYSDIAG             200     // {"T":200} system health check
+
+// ─── IWDG ────────────────────────────────────────────────────────────────────
+// LSI ≈ 32 kHz, prescaler /64 → 500 ticks/s → reload 1499 ≈ 3 s timeout.
+// control_task feeds it every 20 ms, so normal operation never trips it.
+#define IWDG_PRESCALER_VAL  IWDG_PRESCALER_64
+#define IWDG_RELOAD_VAL     1499U
+
+// ─── RTC backup register layout (survives watchdog reset) ────────────────────
+#define HF_BKP_MAGIC_VAL    0xDEADBEEFU
+// BKP0R = magic, BKP1R = PC, BKP2R = LR, BKP3R = CFSR, BKP4R = HFSR,
+// BKP5R = cumulative boot-fault counter (cleared on clean boot)
+
+// ─── Flash config storage ────────────────────────────────────────────────────
+// Sector 7 (128 KB, 0x08060000) — far from firmware, safe from upload overwrites.
+#define CONFIG_FLASH_SECTOR  FLASH_SECTOR_7
+#define CONFIG_FLASH_ADDR    0x08060000U
+#define CONFIG_MAGIC         0xA57A57A5U
+#define CONFIG_VERSION       1U
+
+// ─── Production T-codes (extend existing protocol) ───────────────────────────
+#define CMD_HF_DUMP         201    // {"T":201} hardfault register dump
+#define CMD_FAULT_CLEAR     210    // {"T":210} clear fault flags, → SYS_IDLE
+#define CMD_CONFIG_SAVE     220    // {"T":220} save PID+IMU cal to flash
+#define CMD_CONFIG_LOAD     221    // {"T":221} load config from flash and apply
+#define CMD_CONFIG_DUMP     222    // {"T":222} print current config (no save)
+#define CMD_CONFIG_RESET    223    // {"T":223} reset config to compile-time defaults
+#define CMD_PID_GET         240    // {"T":240} get current PID gains
+#define CMD_PID_SET         241    // {"T":241,"kp":x,"ki":x,"kd":x,"kf":x}
 
 // ─── Utility ─────────────────────────────────────────────────────────────────
 #define CLAMP(x, lo, hi)  ((x) < (lo) ? (lo) : ((x) > (hi) ? (hi) : (x)))

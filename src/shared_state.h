@@ -7,6 +7,18 @@
 extern "C" {
 #endif
 
+typedef enum {
+  SYS_IDLE = 0,
+  SYS_RUNNING,
+  SYS_FAULT
+} RobotSysState;
+
+#define FAULT_HEARTBEAT   (1u << 0)
+#define FAULT_STACK_OVF   (1u << 1)
+#define FAULT_MALLOC_FAIL (1u << 2)
+#define FAULT_HARDFAULT   (1u << 3)
+#define FAULT_IWDG_RESET  (1u << 4)
+
 typedef struct {
   // Command targets (written by json_cmd, read by main loop)
   int16_t target_left;          // normalized -0.5..+0.5 scaled to -100..+100 (T:1/T:13)
@@ -58,6 +70,18 @@ typedef struct {
   bool pid_sat_low_right;
   bool pid_i_freeze_left;
   bool pid_i_freeze_right;
+
+  // Gap 2: Fault state machine
+  RobotSysState sys_state;
+  uint32_t fault_flags;
+  bool heartbeat_fault_notify;  // set by control_task, consumed by serial_task
+
+  // Gap 7: Runtime PID gains (apply via T:241, read via T:240)
+  float pid_kp;
+  float pid_ki;
+  float pid_kd;
+  float pid_kf;
+  bool pid_gains_pending;       // set by T:241, consumed by control_task
 } RobotState;
 
 extern RobotState g_state;
