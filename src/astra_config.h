@@ -74,12 +74,29 @@
 // T:1 L=1.0 → target_left=100 → setpoint = MOTOR_MAX_RPM.
 #define MOTOR_MAX_RPM           200.0f   // RPM ceiling at 7.4V; tune after bench measurement
 
-// Starting gains — expect to tune Kp and Ki on hardware.
-// Rule of thumb: increase Kp until oscillation, then back off 30%; set Ki to cancel drift.
-// Keep Kd = 0 — derivative on RPM amplifies encoder noise at this sample rate.
+// ── Tuning order ──────────────────────────────────────────────────────────────
+// 1. Set Ki=Kd=0. Raise Kf until actual RPM ≈ setpoint with no steady-state error.
+//    Kf is the open-loop motor gain: if setpoint=200 RPM needs output≈50, Kf≈0.25.
+// 2. Re-enable Ki. Increase until residual error disappears without oscillation.
+// 3. Kd stays 0 — derivative amplifies encoder noise at 50 Hz; the derivative-on-
+//    measurement formulation avoids kick but noise is still present on RPM signals.
+
 #define PID_KP                  0.30f
 #define PID_KI                  0.80f
 #define PID_KD                  0.00f
+// Feedforward gain: output contribution = Kf × setpoint_rpm.
+// Start near 0.5 (rough mid-range), then tune per step 1 above.
+#define PID_KF                  0.50f
+
+// ── Setpoint slew rate (motion profiling) ─────────────────────────────────────
+// Limits how fast the RPM setpoint can change per control cycle.
+// This replaces a step command with a smooth ramp, which:
+//   - reduces wheel slip and mechanical shock on acceleration
+//   - keeps yaw-rate correction effective (no instantaneous velocity spikes)
+//   - reduces integrator kick when reversing direction
+// At 50 Hz (dt=0.02 s): 400 RPM/s → 8 RPM per cycle (~0.04 s to full speed from rest).
+// Raise this value if the robot feels sluggish; lower it if wheels slip on start.
+#define ACCEL_LIMIT_RPM_PER_S   400.0f
 
 // Yaw-rate correction (MPU-6050 gz, deg/s → PWM correction applied when driving straight).
 // Positive gz = CCW rotation (robot turning left). Correction reduces left, increases right.

@@ -109,11 +109,30 @@ int main(void)
 //  Velocity PID loop for left and right motors.
 //
 //  T:1 / T:13 commands set target_left / target_right in ±100 units.
-//  These are converted to RPM setpoints (±MOTOR_MAX_RPM), and the PID
-//  closes the loop using encoder_get_left/right_rpm() as the measurement.
+//  These are converted to RPM setpoints (±MOTOR_MAX_RPM).  Before reaching
+//  the PID the setpoint is passed through a slew rate limiter that caps
+//  acceleration to ACCEL_LIMIT_RPM_PER_S.  The PID then closes the loop
+//  using encoder_get_left/right_rpm() as the measurement.
 //  The PID output (±100 PWM units) drives motor_ctrl_set_speed().
 //
 //  T:11 (direct PWM) bypasses the PID entirely — useful for open-loop testing.
+//
+//  PID improvements over a basic textbook implementation:
+//
+//  1. Feedforward (Kf):
+//     output += Kf × setpoint_rpm — handles the bulk of the steady-state load
+//     open-loop so the integrator only corrects disturbances and model error.
+//
+//  2. Setpoint slew rate limiter:
+//     Ramps the RPM setpoint at ≤ ACCEL_LIMIT_RPM_PER_S instead of stepping
+//     it.  Prevents wheel slip on hard commands, reduces integrator kick on
+//     direction reversal, and keeps yaw correction effective during acceleration.
+//     profiled_l / profiled_r are reset to 0 alongside the PIDs on mode switch.
+//
+//  3. Derivative on measurement:
+//     derivative = −Δmeasurement / dt instead of Δerror / dt.
+//     A step setpoint change spikes Δerror but the motor cannot accelerate
+//     instantly, so Δmeasurement stays smooth — no "derivative kick".
 //
 //  IMU update:
 //  imu_update() is called here at 50 Hz so the complementary filter runs at
@@ -134,8 +153,13 @@ static void control_task(void *arg)
 
     static PIDController pid_left;
     static PIDController pid_right;
-    pid_init(&pid_left,  PID_KP, PID_KI, PID_KD, -100.0f, 100.0f);
-    pid_init(&pid_right, PID_KP, PID_KI, PID_KD, -100.0f, 100.0f);
+    pid_init(&pid_left,  PID_KP, PID_KI, PID_KD, PID_KF, -100.0f, 100.0f);
+    pid_init(&pid_right, PID_KP, PID_KI, PID_KD, PID_KF, -100.0f, 100.0f);
+
+    // Profiled (slew-rate-limited) setpoints — track the commanded RPM but
+    // ramp at ≤ ACCEL_LIMIT_RPM_PER_S.  Static so they persist across cycles.
+    static float profiled_l = 0.0f;
+    static float profiled_r = 0.0f;
 
     const float dt = CONTROL_PERIOD_MS * 0.001f;   // seconds — fixed period for PID
 
@@ -168,29 +192,41 @@ static void control_task(void *arg)
             g_state.command_received = false;
             pid_reset(&pid_left);
             pid_reset(&pid_right);
+            profiled_l = 0.0f;
+            profiled_r = 0.0f;
         }
         // ── T:11 direct PWM — bypass PID ────────────────────────────────────
         else if (g_state.direct_pwm_mode)
         {
             // Scale -255..+255 → -100..+100 and apply directly.
-            // Reset PIDs so there is no integrator wind-up surprise on next
-            // switch back to velocity mode.
+            // Reset PIDs and profiled setpoints so there is no integrator
+            // wind-up or slew-limiter lag surprise on next switch to velocity mode.
             int16_t sl = (int16_t)((int32_t)g_state.pwm_left  * 100 / 255);
             int16_t sr = (int16_t)((int32_t)g_state.pwm_right * 100 / 255);
             motor_ctrl_set_speed(sl, sr);
             pid_reset(&pid_left);
             pid_reset(&pid_right);
+            profiled_l = 0.0f;
+            profiled_r = 0.0f;
         }
         // ── Velocity PID — T:1 / T:13 ───────────────────────────────────────
         else
         {
             // Convert ±100 target to ±RPM setpoint
-            const float scale = MOTOR_MAX_RPM / 100.0f;
-            float setpoint_l  = (float)g_state.target_left  * scale;
-            float setpoint_r  = (float)g_state.target_right * scale;
+            const float scale    = MOTOR_MAX_RPM / 100.0f;
+            float target_l       = (float)g_state.target_left  * scale;
+            float target_r       = (float)g_state.target_right * scale;
 
-            float out_l = pid_compute(&pid_left,  setpoint_l, encoder_get_left_rpm(),  dt);
-            float out_r = pid_compute(&pid_right, setpoint_r, encoder_get_right_rpm(), dt);
+            // ── Setpoint slew rate limiter ───────────────────────────────────
+            // Cap how fast the setpoint can change each cycle.
+            // This turns a step command into a smooth ramp, preventing wheel
+            // slip on hard acceleration and reducing integrator kick on reversal.
+            const float max_delta = ACCEL_LIMIT_RPM_PER_S * dt;
+            profiled_l += CLAMP(target_l - profiled_l, -max_delta, max_delta);
+            profiled_r += CLAMP(target_r - profiled_r, -max_delta, max_delta);
+
+            float out_l = pid_compute(&pid_left,  profiled_l, encoder_get_left_rpm(),  dt);
+            float out_r = pid_compute(&pid_right, profiled_r, encoder_get_right_rpm(), dt);
 
             // ── Yaw-rate correction ──────────────────────────────────────────
             // Only correct when driving approximately straight.  When the user
