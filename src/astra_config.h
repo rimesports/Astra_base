@@ -75,11 +75,12 @@
 #define MOTOR_MAX_RPM           200.0f   // RPM ceiling at 7.4V; tune after bench measurement
 
 // ── Tuning order ──────────────────────────────────────────────────────────────
-// 1. Set Ki=Kd=0. Raise Kf until actual RPM ≈ setpoint with no steady-state error.
+// 1. Set Kp=Ki=Kd=0. Raise Kf until actual RPM ≈ setpoint open-loop.
 //    Kf is the open-loop motor gain: if setpoint=200 RPM needs output≈50, Kf≈0.25.
-// 2. Re-enable Ki. Increase until residual error disappears without oscillation.
-// 3. Kd stays 0 — derivative amplifies encoder noise at 50 Hz; the derivative-on-
-//    measurement formulation avoids kick but noise is still present on RPM signals.
+// 2. Raise Kp until response is crisp but not oscillatory.
+// 3. Re-enable Ki to eliminate the remaining steady-state error.
+// 4. Kd stays 0 unless RPM is filtered first — derivative amplifies encoder noise
+//    at 50 Hz even though derivative-on-measurement avoids setpoint kick.
 
 #define PID_KP                  0.30f
 #define PID_KI                  0.80f
@@ -111,6 +112,7 @@
 #define CMD_IMU_QUERY           126
 #define CMD_FEEDBACK_FLOW       130     // {"T":130,"cmd":1}  enable/disable
 #define CMD_FEEDBACK_INTERVAL   131     // {"T":131,"cmd":1,"interval":100}
+#define CMD_PID_DEBUG           132     // {"T":132,"cmd":1} enable PID debug fields in T:1001
 #define CMD_SERIAL_ECHO         143
 
 #define FEEDBACK_BASE_INFO      1001    // T:1001 periodic chassis feedback

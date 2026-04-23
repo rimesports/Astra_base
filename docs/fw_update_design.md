@@ -1,6 +1,79 @@
-# Firmware Update Design — STM32F411CEU6
-**Date:** 2026-04-21
-**Transport:** Jetson → STM32 over USB CDC (`/dev/ttyACM0`)
+# Firmware Update Design - STM32F411CEU6
+**Date:** 2026-04-21  
+**Transport:** Jetson -> STM32 over USB CDC (`/dev/ttyACM0`)  
+**Status:** Design spec for v1 implementation, not yet implemented in this repo
+
+---
+
+## Goal
+
+Allow the Jetson to update the STM32 application firmware in the field without
+ST-Link access, while preserving a safe recovery path when transfer, power, or
+boot failures occur.
+
+This design uses:
+- a **custom flash bootloader** stored in STM32 flash
+- the STM32 **ROM bootloader** only as an emergency recovery path
+- a **staging image** written by the running application
+- a **promotion step** performed by the custom bootloader at reset
+- **boot confirmation** from the new application after a healthy startup
+
+This is a **v1 field-update design**, not a full secure OTA system.
+
+---
+
+## Non-Goals For V1
+
+The following are intentionally out of scope for the first implementation:
+- delta patches
+- image compression
+- resumable interrupted transfers
+- encrypted firmware payloads
+- signed firmware validation in the STM32 bootloader
+- true equal-slot A/B booting
+- rollback to arbitrary historical versions
+
+V1 supports:
+- full-image transfer only
+- CRC-protected transfer and image verification
+- promotion from STAGING to ACTIVE
+- boot-attempt rollback protection
+
+---
+
+## Terminology
+
+- **ROM bootloader**: ST factory bootloader in chip ROM, used for DFU/recovery
+- **Custom bootloader**: project-owned first-stage bootloader in flash sectors 0-1
+- **ACTIVE image**: currently bootable application image
+- **STAGING image**: newly downloaded candidate image
+- **Promotion**: copying a verified STAGING image into ACTIVE
+- **Healthy boot**: new application booted far enough to prove it is usable
+- **Confirmation**: application marks itself accepted after a healthy boot
+
+---
+
+## High-Level Flow
+
+Normal update sequence:
+
+1. Jetson queries the current STM32 version.
+2. If update is needed, Jetson announces a new image to the running STM32 app.
+3. The STM32 app erases STAGING and receives the new image in chunks.
+4. The STM32 app verifies the full staged image CRC and stores update metadata.
+5. The STM32 app reboots.
+6. The custom bootloader verifies STAGING and promotes it to ACTIVE.
+7. The bootloader boots the new ACTIVE image in a pending-confirm state.
+8. The new app reaches a healthy state and calls `fw_confirm()`.
+9. The app reports success to Jetson.
+
+Failure cases:
+- transfer failure -> update session aborted, current ACTIVE image remains unchanged
+- invalid staged CRC -> STAGING rejected, ACTIVE unchanged
+- crash/hang before confirmation -> boot counter increments until rollback path triggers
+- power loss during STAGING write -> ACTIVE unchanged
+- power loss during promotion -> no automatic guarantee unless explicitly handled; see the
+  "Power-Loss Policy" section below
 
 ---
 
@@ -8,321 +81,586 @@
 
 STM32F411CEU6 has 512 KB flash in non-uniform sectors:
 
-```
+```text
 Address      Sector   Size    Content
-0x08000000   0        16 KB   Bootloader
-0x08004000   1        16 KB   Bootloader (continued)
-0x08008000   2        16 KB   Boot metadata (flags, CRC, version, boot count)
+0x08000000   0        16 KB   Custom bootloader
+0x08004000   1        16 KB   Custom bootloader (continued)
+0x08008000   2        16 KB   Boot metadata
 0x0800C000   3        16 KB   App ACTIVE
-0x08010000   4        64 KB   App ACTIVE (continued)  — 80 KB total active slot
+0x08010000   4        64 KB   App ACTIVE (continued)  -> 80 KB total ACTIVE slot
 0x08020000   5       128 KB   App STAGING
 0x08040000   6       128 KB   App STAGING (continued)
-0x08060000   7       128 KB   App STAGING (continued) — 384 KB total staging slot
+0x08060000   7       128 KB   App STAGING (continued) -> 384 KB total STAGING slot
 ```
 
-- **Bootloader**: 32 KB — no FreeRTOS, minimal HAL, USB CDC receive loop
-- **Metadata**: 16 KB — persists boot flags across resets (smallest erasable unit)
-- **App ACTIVE**: 80 KB — currently running firmware (40 KB used, 40 KB headroom)
-- **App STAGING**: 384 KB — receives new image from Jetson before promotion
+### Implications
+
+- The app can no longer be linked at `0x08000000`; it must be linked at `0x0800C000`.
+- The ACTIVE slot is only **80 KB**, so the production application must stay below that limit.
+- STAGING is intentionally larger than ACTIVE to make transfer simpler, but promotion still
+  copies into the smaller ACTIVE slot.
+
+### App Size Rule
+
+Before commit, STM32 must reject any image where:
+- `image_size > ACTIVE_SLOT_SIZE`
+- descriptor is missing or invalid
+- image CRC does not match descriptor CRC
+
+---
+
+## Power-Loss Policy
+
+This design is **not** a true equal-slot A/B system. Promotion is performed by:
+
+1. verifying STAGING
+2. erasing ACTIVE
+3. copying STAGING -> ACTIVE
+4. verifying ACTIVE
+
+### Important consequence
+
+If power is lost **during STAGING download**, the old ACTIVE image remains intact.
+
+If power is lost **during promotion after ACTIVE erase**, the device may no longer have a
+valid bootable application image. In v1, this condition is considered a **manual recovery**
+case unless the promotion-state metadata allows safe detection and operator recovery.
+
+### Required metadata state
+
+To make this explicit, metadata must track:
+- `promotion_in_progress`
+
+If the bootloader sees `promotion_in_progress = 1` on the next boot, it must:
+- avoid assuming ACTIVE is valid
+- avoid attempting to boot a partially copied image
+- enter a defined recovery behavior
+
+### Recommended v1 recovery behavior
+
+One of these must be chosen and documented in implementation:
+
+Option A: conservative recovery
+- mark device unrecoverable by app
+- stay in bootloader fail loop
+- require ST-Link or ROM DFU recovery
+
+Option B: advanced recovery
+- preserve enough metadata to retry promotion from intact STAGING
+
+For v1, **Option A is acceptable** if documented clearly.
 
 ---
 
 ## Image Descriptor
 
-Every firmware binary embeds a descriptor at a fixed offset from the application base
-(ACTIVE_BASE + 0x200, after the 512-byte Cortex-M4 vector table).
+Every application binary embeds a descriptor at a fixed offset from the application base
+(ACTIVE_BASE + `0x200`, after the vector table area).
 
 ```c
-// src/fw_descriptor.h
 #define APP_DESCRIPTOR_MAGIC  0xA57EC0DE
 
 typedef struct __attribute__((packed)) {
-    uint32_t magic;         // APP_DESCRIPTOR_MAGIC — identifies valid image
-    uint32_t version;       // major<<24 | minor<<16 | patch
-    uint32_t image_size;    // total image size in bytes
-    uint32_t crc32;         // CRC32 of entire image (this field = 0 during computation)
-    uint32_t timestamp;     // Unix build timestamp
-    uint8_t  git_hash[8];   // first 8 bytes of short SHA
-    uint8_t  reserved[8];   // pad to 36 bytes
+    uint32_t magic;          // APP_DESCRIPTOR_MAGIC
+    uint32_t version;        // major<<24 | minor<<16 | patch
+    uint32_t image_size;     // total image size in bytes
+    uint32_t crc32;          // CRC32 of the full image, with this field zeroed during calc
+    uint32_t timestamp;      // Unix build timestamp
+    uint32_t board_id;       // hardware compatibility ID
+    uint32_t image_type;     // application image type, e.g. 1 = main app
+    uint8_t  git_hash[8];    // first 8 bytes of short SHA
+    uint8_t  reserved[8];
 } AppDescriptor_t;
-
-// Placed via linker at ACTIVE_BASE + 0x200
-extern const AppDescriptor_t app_descriptor;
 ```
 
-The Jetson-side update script reads the descriptor from the `.bin` file to extract
-version and declared CRC32 before initiating transfer.
+### Descriptor requirements
+
+- `magic` must match
+- `image_size` must be non-zero and <= ACTIVE slot size
+- `board_id` must match this product/hardware revision
+- `image_type` must match the main application type expected by bootloader
+- `crc32` must match full-image CRC using the STM32 CRC convention defined below
+
+### Version policy
+
+V1 should define one of these behaviors:
+- allow upgrade only
+- allow same-version reinstall
+- allow downgrade
+
+Recommended v1 policy:
+- allow same-version reinstall
+- reject downgrades by default unless a debug/recovery override is explicitly enabled
 
 ---
 
-## Boot Metadata (Sector 2)
+## Boot Metadata
 
-Written by bootloader and application. Survives power cycles.
+Boot metadata lives in sector 2 and is shared between bootloader and application.
 
 ```c
-// src/boot_meta.h
 #define BOOT_META_MAGIC     0xB007F1A6
 #define BOOT_META_BASE      0x08008000
 #define BOOT_MAX_ATTEMPTS   3
 
 typedef struct __attribute__((packed)) {
-    uint32_t magic;               // BOOT_META_MAGIC — detects uninitialised sector
-    uint8_t  staging_valid;       // 1 = staging passed CRC, ready to promote
-    uint8_t  boot_count;          // incremented each boot; app resets to 0 via fw_confirm()
-    uint8_t  rollback_triggered;  // set when boot_count >= BOOT_MAX_ATTEMPTS
-    uint8_t  pad;
-    uint32_t active_version;      // version word of currently running image
-    uint32_t staging_version;     // version word of staged image
-    uint32_t active_crc32;        // declared CRC of active image (from descriptor)
-    uint32_t staging_crc32;       // declared CRC of staged image (from descriptor)
-    uint8_t  reserved[8];
-    uint32_t meta_crc32;          // CRC32 of this struct (this field = 0 during computation)
-} BootMeta_t;                     // 40 bytes
+    uint32_t magic;
+
+    uint8_t  staging_received;      // full image written to STAGING
+    uint8_t  staging_verified;      // full staged image CRC passed
+    uint8_t  promotion_in_progress; // ACTIVE erase/copy underway
+    uint8_t  boot_pending_confirm;  // booting new ACTIVE image, waiting for fw_confirm()
+
+    uint8_t  boot_count;            // incremented on each pending-confirm boot
+    uint8_t  rollback_triggered;    // latched when attempts exceeded
+    uint8_t  reserved0[2];
+
+    uint32_t active_version;
+    uint32_t staging_version;
+    uint32_t active_crc32;
+    uint32_t staging_crc32;
+    uint32_t board_id;
+
+    uint8_t  reserved1[8];
+    uint32_t meta_crc32;            // CRC32 of the struct with this field zeroed
+} BootMeta_t;
 ```
+
+### Why richer state is needed
+
+Using only `staging_valid` is ambiguous. The bootloader must be able to distinguish:
+- image download completed
+- image verified
+- promotion started but not finished
+- new image booted but not yet accepted
+
+These states make failure recovery deterministic.
+
+### Metadata write strategy
+
+V1 minimum:
+- erase sector 2
+- write one complete metadata struct
+- verify readback
+
+Recommended improvement:
+- use two metadata records with sequence counters inside sector 2 so a partial write
+  does not destroy the only valid metadata copy
+
+If only a single metadata record is used in v1, that limitation should be documented.
 
 ---
 
 ## Bootloader State Machine
 
-```
+```text
 Power-on / Reset
-       │
-       ▼
-  Read BootMeta from 0x08008000
-       │
-       ├─ meta_crc32 bad or magic wrong?
-       │       └─→ Boot ACTIVE unconditionally (factory default)
-       │
-       ├─ staging_valid == 1 AND boot_count < BOOT_MAX_ATTEMPTS?
-       │       │
-       │       ▼
-       │   Compute CRC32 of STAGING image (hardware CRC unit)
-       │   Compare vs meta.staging_crc32
-       │       │
-       │       ├─ PASS → erase ACTIVE sectors (3–4)
-       │       │          copy STAGING → ACTIVE word-by-word
-       │       │          re-verify ACTIVE CRC after copy
-       │       │          update meta: staging_valid=0, boot_count=0, swap versions
-       │       │          write meta → reboot
-       │       │
-       │       └─ FAIL → meta.staging_valid = 0, write meta
-       │                  fall through to normal boot
-       │
-       ├─ boot_count >= BOOT_MAX_ATTEMPTS?
-       │       └─→ meta.rollback_triggered = 1
-       │            meta.staging_valid = 0
-       │            meta.boot_count = 0
-       │            write meta → boot ACTIVE (last known state)
-       │
-       └─ Normal boot:
-              meta.boot_count++
-              write meta
-              start IWDG (5-second timeout)
-              verify ACTIVE image CRC vs AppDescriptor.crc32
-              if bad → increment boot_count, reboot (triggers rollback path)
-              jump to ACTIVE application
+      |
+      v
+Read BootMeta
+      |
+      +-- invalid magic or bad meta CRC?
+      |      -> use factory-default state
+      |
+      +-- promotion_in_progress == 1?
+      |      -> enter explicit recovery behavior
+      |
+      +-- staging_verified == 1?
+      |      -> verify STAGING image
+      |      -> if pass:
+      |            set promotion_in_progress = 1
+      |            write metadata
+      |            erase ACTIVE
+      |            copy STAGING -> ACTIVE
+      |            verify ACTIVE CRC
+      |            if pass:
+      |                clear staging flags
+      |                clear promotion_in_progress
+      |                set boot_pending_confirm = 1
+      |                set boot_count = 0
+      |                copy version/CRC ACTIVE <- STAGING
+      |                write metadata
+      |            else:
+      |                recovery behavior
+      |
+      +-- boot_pending_confirm == 1?
+      |      -> boot_count++
+      |      -> if boot_count >= BOOT_MAX_ATTEMPTS:
+      |             rollback_triggered = 1
+      |             boot_pending_confirm = 0
+      |             write metadata
+      |             recovery behavior
+      |
+      +-- verify ACTIVE descriptor + CRC
+      |      -> if invalid: recovery behavior
+      |
+      +-- jump to ACTIVE app
 ```
+
+### Healthy boot confirmation
+
+The application must call `fw_confirm()` only after all of these are true:
+- vector table and scheduler are running normally
+- USB CDC is initialized and able to communicate
+- command handling is active
+- motor outputs are in a safe initialized state
+- failsafe timing is running
+
+Do **not** confirm at the first line of `main()`.
 
 ---
 
 ## Three-Layer Verification
 
-### Layer 1 — Per-chunk transfer integrity
-- Jetson appends CRC16-CCITT to every 256-byte chunk
+### Layer 1 - Per-chunk transfer integrity
+- Jetson appends CRC16-CCITT to every chunk
 - STM32 verifies before writing to flash
-- Failed chunk: STM32 sends NAK, Jetson retransmits same chunk (max 3 retries)
+- failed chunk -> NAK
+- Jetson retransmits the same chunk
+- max retries per chunk: **3**
 
-### Layer 2 — Full image integrity (staging)
-- Jetson declares `crc32` and `size` in the start packet
-- STM32 accumulates CRC32 using STM32 hardware CRC unit during receive
-- After last chunk: compare accumulated vs declared
-- Must match before `staging_valid` is set to 1
-- Mismatch → staging erased, update aborted
+### Layer 2 - Full staged image integrity
+- Jetson declares full-image `size`, `crc32`, `version`, and `board_id` in start packet
+- STM32 accumulates CRC32 while receiving or after full write
+- after the last chunk, STM32 compares computed CRC32 to declared CRC32
+- only then may it set `staging_verified = 1`
 
-### Layer 3 — Post-promotion boot integrity
-- Bootloader re-computes CRC32 of ACTIVE flash after copy
-- Compares against `AppDescriptor.crc32` embedded in image
-- Mismatch → flash was corrupted during erase/copy → boot_count incremented → eventual rollback
+### Layer 3 - Post-promotion boot integrity
+- bootloader re-validates the ACTIVE descriptor and image CRC before jumping
+- if confirmation never arrives, boot attempts are limited by `BOOT_MAX_ATTEMPTS`
+
+---
+
+## CRC32 Convention
+
+STM32F4 hardware CRC uses polynomial `0x04C11DB7` in a non-reflected form.
+
+Implementation target:
+- polynomial: `0x04C11DB7`
+- init value: `0xFFFFFFFF`
+- reflected input/output: **false**
+- xorOut: `0x00000000`
+
+### Required test vector
+
+Both Jetson and STM32 implementations must be validated against at least one shared
+known-answer test vector before field use.
+
+Example requirement:
+- create `crc_test.bin` containing a fixed byte pattern
+- record expected STM32 CRC32 in the repo
+- Jetson updater must compute the exact same value before release
+
+Do not rely on Python `binascii.crc32()` unless wrapped to match this convention.
 
 ---
 
 ## Transfer Protocol
 
-### Phase 1 — Announce
-```
-Jetson → {"T":300,"size":41984,"crc32":2891156482,"ver":"1.2.0","chunks":164}
-STM32  → {"T":300,"ack":true,"chunk_size":256}
-          (STM32 erases staging sectors 5–7 in background, ~1.5 s)
-STM32  → {"T":300,"ready":true}   sent when erase complete
+### Session policy
+
+V1 does **not** support resuming interrupted sessions.
+
+If the link drops or session times out:
+- discard in-progress session state
+- restart from `T:300`
+
+### Phase 1 - Announce
+
+Jetson announces an update session:
+
+```json
+{"T":300,"session":17,"size":41984,"crc32":2891156482,"ver":16908288,"board":1,"chunks":164}
 ```
 
-### Phase 2 — Binary chunks
-```
-Packet format (265 bytes):
-  [0xFE]        1 B   start byte
-  [seq]         2 B   big-endian sequence number (0-based)
-  [len]         2 B   payload length (256 or less for last chunk)
-  [data]      256 B   firmware bytes
-  [crc16]       2 B   CRC16-CCITT of header + data
+STM32 replies:
 
-ACK  (4 bytes): [0xAC][seq:2B][0x01]
-NAK  (4 bytes): [0xAC][seq:2B][0x00]   → Jetson retransmits this chunk
+```json
+{"T":300,"ack":true,"session":17,"chunk_size":256}
 ```
 
-### Phase 3 — Verify
-```
-Jetson → {"T":302}
-STM32  → {"T":302,"ok":true,"crc32":2891156482}
-          or {"T":302,"ok":false,"got":3491012874}  → abort, Jetson retries from Phase 1
+After STAGING erase completes:
+
+```json
+{"T":300,"ready":true,"session":17}
 ```
 
-### Phase 4 — Commit
-```
-Jetson → {"T":303}
-STM32  → {"T":303,"ack":true,"reboot_ms":500}
-          writes staging_valid=1 to metadata
-          reboots after 500 ms → bootloader promotes staging → active → new firmware
+### Required start checks
+
+STM32 must reject `T:300` if:
+- another update session is active
+- size exceeds ACTIVE slot
+- `board` is incompatible
+- descriptor policy would reject the incoming version
+
+### Phase 2 - Binary chunks
+
+Packet format:
+
+```text
+[0xFE]        1 B   start byte
+[session]     2 B   session ID, big-endian
+[seq]         2 B   chunk sequence number, big-endian
+[len]         2 B   payload length (<= 256)
+[data]      N B   payload
+[crc16]       2 B   CRC16-CCITT of header + payload
 ```
 
-### Phase 5 — Confirmation (new firmware, within 5 s of boot)
-```
-New app → {"T":304,"ver":"1.2.0","boot_count":1}
-Jetson  → logs upgrade success
-```
-If T:304 never arrives within timeout → IWDG fires → boot_count increments → rollback on 3rd attempt.
+ACK:
 
-### Abort / Revert
+```text
+[0xAC][session:2B][seq:2B][0x01]
 ```
-Jetson → {"T":305}   abort in-progress update (any phase)
-Jetson → {"T":306}   revert to staging image (if staging_valid still 1 from previous update)
+
+NAK:
+
+```text
+[0xAC][session:2B][seq:2B][0x00]
 ```
+
+### Timeout policy
+
+- per-chunk response timeout: **500 ms**
+- max per-chunk retries: **3**
+- total idle session timeout on STM32: **5 s**
+
+On session timeout:
+- STM32 discards active receive state
+- STAGING remains invalid
+- Jetson must restart from `T:300`
+
+### Phase 3 - Verify
+
+Jetson sends:
+
+```json
+{"T":302,"session":17}
+```
+
+STM32 replies:
+
+```json
+{"T":302,"session":17,"ok":true,"crc32":2891156482}
+```
+
+or
+
+```json
+{"T":302,"session":17,"ok":false,"got":3491012874}
+```
+
+If verify fails:
+- clear staging flags
+- update aborted
+
+### Phase 4 - Commit
+
+Jetson sends:
+
+```json
+{"T":303,"session":17}
+```
+
+STM32 replies:
+
+```json
+{"T":303,"session":17,"ack":true,"reboot_ms":500}
+```
+
+Then the application:
+- stores `staging_received = 1`
+- stores `staging_verified = 1`
+- stores staged version and CRC
+- reboots
+
+### Phase 5 - Confirmation From New App
+
+After successful promotion and healthy boot, the new app sends:
+
+```json
+{"T":304,"ver":16908288,"boot_count":1,"confirmed":true}
+```
+
+Jetson treats missing `T:304` as update failure and logs it.
 
 ---
 
-## Rollback Safety
+## Abort / Revert Policy
 
-| Mechanism | How |
-|-----------|-----|
-| Boot counter | Bootloader increments on every boot; app resets via `fw_confirm()`; limit = 3 |
-| IWDG watchdog | Started by bootloader with 5 s timeout; app refreshes in `control_task` (10 ms); crash → reset → boot_count++ |
-| CRC re-check on boot | Bootloader verifies ACTIVE CRC before jump; corruption → rollback path |
-| Dual copy retained | STAGING not erased until new image arrives; Jetson can trigger T:306 revert |
-| Meta self-check | `meta_crc32` validates metadata struct; corruption → unconditional ACTIVE boot |
+### V1
+
+Recommended v1 behavior:
+- support `T:305` abort only for an active transfer session
+- do **not** implement `T:306` revert yet
+
+Reason:
+- revert adds state complexity and recovery edge cases before the base updater is proven
+
+### `T:305` abort semantics
+
+If the app receives:
+
+```json
+{"T":305,"session":17}
+```
+
+it should:
+- cancel the active transfer state machine
+- leave `staging_verified = 0`
+- not schedule promotion
+- keep ACTIVE unchanged
 
 ---
 
-## CRC32 Implementation
+## Bootloader Implementation Constraints
 
-STM32F4 has a **hardware CRC32 unit** (polynomial 0x04C11DB7, same as Ethernet/ZIP):
+The custom bootloader must remain minimal:
+- no FreeRTOS
+- no USB CDC stack
+- no sensor initialization
+- no motor control logic
+- no dynamic allocation
 
-```c
-// Reset and compute CRC32 of a buffer
-uint32_t hw_crc32(const uint8_t *data, uint32_t len) {
-    RCC->AHB1ENR |= RCC_AHB1ENR_CRCEN;
-    CRC->CR = CRC_CR_RESET;
-    for (uint32_t i = 0; i < len / 4; i++) {
-        uint32_t word;
-        memcpy(&word, data + i * 4, 4);
-        CRC->DR = word;
-    }
-    // Handle remaining bytes (< 4)
-    uint32_t rem = len % 4;
-    if (rem) {
-        uint32_t word = 0;
-        memcpy(&word, data + len - rem, rem);
-        CRC->DR = word;
-    }
-    return CRC->DR;
-}
-```
-
-**Note:** Python's `binascii.crc32()` uses a different bit-reflection convention.
-Use `crcmod` on the Jetson side with `poly=0x104C11DB7, initCrc=0xFFFFFFFF, rev=False, xorOut=0`.
-Or validate against STM32 output during bringup with a known test vector.
+It should contain only:
+- metadata read/write
+- flash erase/write/copy
+- CRC verification
+- watchdog / boot-attempt handling
+- vector-table jump logic
 
 ---
 
-## Jetson-Side Script Outline
+## Jump-To-App Requirements
 
-```python
-# fw_update.py
-import serial, struct, binascii, time
+When jumping to the ACTIVE application:
 
-CHUNK_SIZE = 256
-T_START    = 300
-T_VERIFY   = 302
-T_COMMIT   = 303
-T_CONFIRM  = 304
+1. validate the application's initial MSP
+2. validate the reset vector is inside application flash
+3. set MSP from the application's vector table
+4. set `SCB->VTOR = ACTIVE_BASE`
+5. branch to the application's reset handler
 
-def update(port, bin_path):
-    image = open(bin_path, 'rb').read()
-    crc32 = compute_crc32(image)           # must match STM32 hw_crc32 convention
-    chunks = math.ceil(len(image) / CHUNK_SIZE)
-
-    ser = serial.Serial(port, timeout=5)
-
-    # Phase 1 — announce
-    send_json(ser, {"T": T_START, "size": len(image),
-                    "crc32": crc32, "chunks": chunks})
-    wait_for(ser, lambda r: r.get("ready"))
-
-    # Phase 2 — chunks
-    for seq in range(chunks):
-        chunk = image[seq*CHUNK_SIZE : (seq+1)*CHUNK_SIZE]
-        send_chunk(ser, seq, chunk)        # retries on NAK, max 3 attempts
-
-    # Phase 3 — verify
-    send_json(ser, {"T": T_VERIFY})
-    resp = wait_json(ser)
-    assert resp["ok"], f"CRC mismatch: got {resp['got']:#010x}"
-
-    # Phase 4 — commit
-    send_json(ser, {"T": T_COMMIT})
-    wait_for(ser, lambda r: r.get("ack"))
-
-    # Phase 5 — wait for confirmation from new firmware
-    resp = wait_json(ser, timeout=15)
-    assert resp["T"] == T_CONFIRM, "New firmware did not confirm boot"
-    print(f"Update successful — running v{format_ver(resp['ver'])}")
-```
+The rebased application must provide a valid vector table at `ACTIVE_BASE`.
 
 ---
 
-## Linker Script Changes (App)
+## Jetson-Side Updater Responsibilities
 
-Add descriptor section at fixed offset from app base:
+The Jetson updater script must:
+- query current STM32 version before update
+- validate board compatibility before sending
+- use the exact STM32 CRC32 convention
+- retry chunks on NAK up to the protocol limit
+- treat session timeout as fatal and restart from `T:300`
+- wait for `T:304` after reboot
+- log exact failure phase
 
-```ld
-/* In app linker script — after vector table */
-.fw_descriptor 0x0800C200 :
-{
-    KEEP(*(.fw_descriptor))
-} >FLASH
-```
+Recommended outputs:
+- current version
+- target version
+- session ID
+- chunk retry count
+- verify result
+- confirmation result
 
-```c
-/* In firmware */
-const AppDescriptor_t app_descriptor __attribute__((section(".fw_descriptor"))) = {
-    .magic      = APP_DESCRIPTOR_MAGIC,
-    .version    = (1 << 24) | (2 << 16) | 0,
-    .image_size = 0,        /* filled by post-build script */
-    .crc32      = 0,        /* filled by post-build script */
-    .timestamp  = BUILD_TIMESTAMP,
-    .git_hash   = GIT_HASH,
-};
-```
+---
 
-A post-build Python script fills in `image_size` and `crc32` by patching the `.bin` file.
+## Security Notes
+
+V1 provides **integrity**, not authenticity.
+
+CRC protects against:
+- line noise
+- corruption
+- incomplete writes
+
+CRC does **not** protect against:
+- wrong-but-valid image
+- malicious image
+- unauthorized update trigger
+
+Recommended later improvements:
+- signed manifest on Jetson
+- signed image verified by bootloader
+- update authorization token or policy gating
+
+---
+
+## Recommended V1 File Set
+
+Application-side:
+- `src/fw_descriptor.h`
+- `src/fw_descriptor.cpp`
+- `src/boot_meta.h`
+- `src/boot_meta.cpp`
+- `src/flash_drv.h`
+- `src/flash_drv.cpp`
+- `src/hw_crc32.h`
+- `src/hw_crc32.cpp`
+- `src/fw_update.h`
+- `src/fw_update.cpp`
+- `src/fw_confirm.h`
+- `src/fw_confirm.cpp`
+
+Bootloader-side:
+- `bootloader/src/main.cpp`
+- `bootloader/src/boot_jump.cpp`
+- shared or duplicated `boot_meta`, `flash_drv`, `hw_crc32`
+
+Build / tooling:
+- bootloader PlatformIO environment
+- app linker script rebased to `0x0800C000`
+- post-build script to patch descriptor size + CRC
+- `tools/fw_update.py`
 
 ---
 
 ## Implementation Order
 
-1. **`fw_descriptor.h`** — struct definition, linker placement
-2. **`boot_meta.h/.cpp`** — read/write metadata with self-CRC, `fw_confirm()` API
-3. **`flash_drv.cpp`** — erase staging sectors, write chunks, readback verify
-4. **`hw_crc32.cpp`** — hardware CRC unit wrapper
-5. **Bootloader project** — separate PlatformIO env, sectors 0–1, no RTOS
-6. **App changes** — call `fw_confirm()` after successful init, handle T:300–306
-7. **Post-build script** — patch descriptor `image_size` + `crc32` into `.bin`
-8. **`fw_update.py`** (Jetson) — full update client with retry logic
+1. Define flash map and linker scripts
+2. Rebase app to ACTIVE slot
+3. Add image descriptor
+4. Add CRC wrapper
+5. Add flash driver
+6. Add metadata read/write and validation
+7. Build minimal bootloader that can jump to app
+8. Add promotion logic
+9. Add app confirmation logic
+10. Add app-side update session and transfer handling
+11. Add Jetson updater script
+12. Add failure testing for power loss, bad CRC, and unconfirmed boot
+
+---
+
+## Open Decisions Before Implementation
+
+These should be finalized before coding starts:
+
+1. **Promotion recovery policy**
+   If power fails after ACTIVE erase, is manual recovery acceptable for v1?
+
+2. **Version policy**
+   Are downgrades allowed in manufacturing/debug builds only, or never?
+
+3. **Board compatibility**
+   What exact `board_id` values should be used now and for future hardware revisions?
+
+4. **Metadata format**
+   Is a single metadata record acceptable for v1, or should dual records be implemented now?
+
+5. **Abort command**
+   Should `T:305` ship in v1, or should v1 rely only on timeout and restart?
+
+---
+
+## Summary
+
+This design matches the intended STM32 OTA architecture for this project:
+- the **running app** receives and stages the update
+- the **custom bootloader** verifies and promotes it
+- the **new app** confirms healthy boot
+- the **Jetson** orchestrates the update and records success/failure
+
+The main tradeoff of this v1 design is that it uses **STAGING -> ACTIVE copy**
+instead of a true equal-slot A/B scheme. That keeps the flash map simple but
+requires clear handling of promotion-time power loss.

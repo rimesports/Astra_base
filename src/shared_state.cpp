@@ -23,6 +23,19 @@ void shared_state_init(void) {
   // Default off — enable with {"T":130,"cmd":1}
   g_state.continuous_fb = false;
   g_state.fb_interval_ms = TELEMETRY_PERIOD_MS;
+  g_state.pid_debug_enabled = false;
+  g_state.pid_profiled_left = 0.0f;
+  g_state.pid_profiled_right = 0.0f;
+  g_state.pid_output_left = 0.0f;
+  g_state.pid_output_right = 0.0f;
+  g_state.pid_integrator_left = 0.0f;
+  g_state.pid_integrator_right = 0.0f;
+  g_state.pid_sat_high_left = false;
+  g_state.pid_sat_high_right = false;
+  g_state.pid_sat_low_left = false;
+  g_state.pid_sat_low_right = false;
+  g_state.pid_i_freeze_left = false;
+  g_state.pid_i_freeze_right = false;
 }
 
 void shared_state_feed_heartbeat(void) {

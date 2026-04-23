@@ -34,6 +34,21 @@ typedef struct {
   // Continuous feedback config (written by T:130/T:131, read by main loop)
   bool continuous_fb;           // true = send T:1001 periodically
   uint32_t fb_interval_ms;      // telemetry interval in ms (default: TELEMETRY_PERIOD_MS)
+
+  // Optional PID tuning/debug telemetry
+  bool pid_debug_enabled;
+  float pid_profiled_left;
+  float pid_profiled_right;
+  float pid_output_left;
+  float pid_output_right;
+  float pid_integrator_left;
+  float pid_integrator_right;
+  bool pid_sat_high_left;
+  bool pid_sat_high_right;
+  bool pid_sat_low_left;
+  bool pid_sat_low_right;
+  bool pid_i_freeze_left;
+  bool pid_i_freeze_right;
 } RobotState;
 
 extern RobotState g_state;
