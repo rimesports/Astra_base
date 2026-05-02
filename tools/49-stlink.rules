@@ -1,0 +1,15 @@
+# 49-stlink.rules - udev rules for passwordless ST-Link and Black Pill USB access
+# Install: sudo cp tools/49-stlink.rules /etc/udev/rules.d/
+#          sudo udevadm control --reload-rules && sudo udevadm trigger
+#          sudo usermod -aG plugdev,dialout $USER  (then log out/in)
+
+# ST-Link V2 / V2-1 / V3
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="3748", MODE="0666", GROUP="plugdev"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="374b", MODE="0666", GROUP="plugdev"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="374e", MODE="0666", GROUP="plugdev"
+
+# STM32 DFU bootloader (BOOT0 mode — pio run -e dfu)
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="df11", MODE="0666", GROUP="plugdev"
+
+# Black Pill USB CDC serial (/dev/ttyACM0)
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="5740", GROUP="dialout", MODE="0666"
