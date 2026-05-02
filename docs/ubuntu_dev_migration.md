@@ -6,11 +6,12 @@ with full autonomous agent operation — no sudo passwords during normal develop
 
 ---
 
-## 1. PlatformIO
+## 1. Base packages + PlatformIO
 
 ```bash
-# Install Python pip if needed
-sudo apt install python3-pip python3-venv -y
+# Install base packages
+sudo apt update
+sudo apt install python3-pip python3-venv python3-serial git curl dfu-util -y
 
 # Install PlatformIO CLI
 curl -fsSL https://raw.githubusercontent.com/platformio/platformio-core-installer/master/get-platformio.py -o /tmp/get-platformio.py
@@ -30,12 +31,13 @@ pio --version
 
 ```bash
 sudo tee /etc/udev/rules.d/49-stlink.rules << 'EOF'
-# ST-Link V2/V3
+# ST-Link V2/V2-1/V3 (include common IDs seen in practice)
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="3748", MODE="0666", GROUP="plugdev"
 SUBSYSTEM=="usb", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="374b", MODE="0666", GROUP="plugdev"
 # STM32 DFU Bootloader (Black Pill BOOT0 mode)
 SUBSYSTEM=="usb", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="df11", MODE="0666", GROUP="plugdev"
 # USB CDC serial (Black Pill firmware — becomes /dev/ttyACM0)
-SUBSYSTEM=="tty", ATTRS{idVendor}=="0483", GROUP="dialout", MODE="0666"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="5740", GROUP="dialout", MODE="0666"
 EOF
 
 sudo udevadm control --reload-rules
@@ -71,18 +73,45 @@ Connect the Black Pill via ST-Link, then:
 pio run -t upload
 ```
 
-Expected: build succeeds, ST-Link flashes, board resets. Serial port appears as `/dev/ttyACM0`.
+Expected: build succeeds, ST-Link flashes, board resets with `reset run`, and the serial port appears as `/dev/ttyACM0`.
 
-**Note:** `upload_command` in [platformio.ini](../platformio.ini) currently points to `stlink_flash.bat` — update it for Linux:
+**Important:** the current repo `upload_command` in [platformio.ini](../platformio.ini) is Windows-specific:
 
 ```ini
-; platformio.ini — replace the upload_command line with:
-upload_command = openocd -f interface/stlink.cfg -f target/stm32f4x.cfg \
-  -c "reset_config srst_only srst_nogate connect_assert_srst" \
-  -c "program {$SOURCE} verify reset exit 0x08000000"
+upload_command = C:\Users\yegen\Robotics\STM32\stlink_flash.bat $SOURCE
 ```
 
-Or remove `upload_command` entirely to let PlatformIO use its default OpenOCD invocation.
+For Ubuntu, use one of these:
+
+1. Remove `upload_command` entirely and let PlatformIO use its default ST-Link/OpenOCD path.
+2. Replace it with a Linux shell wrapper that preserves the validated post-flash `reset run` behavior.
+
+Recommended Linux wrapper:
+
+```bash
+cat > tools/flash.sh << 'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+pio run --target upload "$@"
+
+OPENOCD="$HOME/.platformio/packages/tool-openocd/bin/openocd"
+if [[ -x "$OPENOCD" ]]; then
+  "$OPENOCD" -f interface/stlink.cfg -f target/stm32f4x.cfg \
+    -c "init" -c "reset run" -c "shutdown"
+fi
+EOF
+
+chmod +x tools/flash.sh
+```
+
+Then in `platformio.ini` use:
+
+```ini
+upload_command = ${PROJECT_DIR}/tools/flash.sh $SOURCE
+```
+
+This matches the currently validated Windows workflow more closely than a plain default upload.
 
 ---
 
@@ -106,9 +135,18 @@ ls /dev/ttyACM*
 # Open serial console
 python3 tools/serial_console.py --port /dev/ttyACM0
 
-# Quick test (no hardware needed)
-echo '{"T":143}' > /dev/ttyACM0    # echo command — board should reply
+# Quick test
+python3 tools/serial_console.py --port /dev/ttyACM0
 ```
+
+Then send:
+
+```text
+echo
+diag
+```
+
+Using the Python console is preferred over raw `echo > /dev/ttyACM0` because it handles line endings and reads replies directly.
 
 ---
 
@@ -160,7 +198,8 @@ On Linux the Black Pill CDC port is `/dev/ttyACM0` (not `COM6`).
 
 Files to update after migration:
 - [platformio.ini](../platformio.ini): `monitor_port = /dev/ttyACM0`
-- [tools/serial_console.py](../tools/serial_console.py): `PORT = "/dev/ttyACM0"`
+
+`tools/serial_console.py` already accepts `--port`, so it does not require a code change if you pass the device path explicitly.
 
 Confirm the port name first — if another ACM device is present it may be `ttyACM1`:
 ```bash
@@ -171,7 +210,19 @@ dmesg | tail -5
 
 ---
 
-## 9. Sudo-free agent operation summary
+## 9. VS Code notes
+
+Ubuntu + VS Code should make this repo easier to work with, but it will not by itself reduce firmware bugs. The main wins are:
+
+- better USB / serial visibility with `dmesg`, `lsusb`, and `/dev/ttyACM*`
+- easier scripting around `openocd`, `dfu-util`, and PlatformIO
+- smoother automation and CI alignment
+
+The firmware still needs the same validation for watchdog, CDC, shared state, and fault handling.
+
+---
+
+## 10. Sudo-free agent operation summary
 
 After the udev rules and group membership above, these all run without password:
 
@@ -187,7 +238,7 @@ Only `apt install` and `systemctl` still need sudo — scope those in `/etc/sudo
 
 ---
 
-## 10. Port assignment stability (optional but recommended)
+## 11. Port assignment stability (optional but recommended)
 
 If `/dev/ttyACM0` shifts when other USB devices are present, pin it with a symlink rule:
 
@@ -200,3 +251,15 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 ```
 
 Then use `/dev/ttyBlackPill` everywhere instead of `ttyACM0`.
+
+---
+
+## 12. Recommended migration outcome
+
+If the move is done, the repo should end up with:
+
+- Linux-native `upload_command` or no custom `upload_command`
+- `monitor_port = /dev/ttyBlackPill` or `/dev/ttyACM0`
+- verified `pio run`, `pio run -t upload`, `pio run -e dfu -t upload`
+- verified `python3 tools/serial_console.py --port /dev/ttyBlackPill`
+- no routine dependence on `sudo` during normal development
