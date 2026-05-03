@@ -4,8 +4,9 @@
 
 Differential-drive robot base firmware for the **WeAct Black Pill STM32F411CEU6**.
 Migrated from Nucleo L476RG (see [docs/chipset_migration_l476_to_f411.md](docs/chipset_migration_l476_to_f411.md) for the decision log).
-The board communicates with a Jetson host via **USB CDC** (virtual COM port) using the
-Waveshare JSON (T-code) protocol — **no changes are needed on the Jetson side**.
+The board communicates with a Jetson host via **USB CDC** (virtual COM port) using
+newline-terminated JSON T-codes. The ROS 2 Jetson bridge sends `T:13` for
+`/cmd_vel` and `T:0` for shutdown stop.
 
 ---
 
@@ -135,17 +136,18 @@ extern "C" void vApplicationMallocFailedHook(void) {
 
 ---
 
-## Waveshare JSON (T-code) Protocol
+## JSON T-code Protocol
 
-All messages are newline-terminated JSON. Same protocol as the ESP32 version — Jetson sees no difference.
+All messages are newline-terminated JSON over USB CDC.
 
 ### Commands (Jetson → STM32)
 
 | T code | Meaning | Key fields |
 |--------|---------|------------|
-| `T:1` | Speed control (normalized) | `L` ∈ -1.0..+1.0, `R` ∈ -1.0..+1.0 → scaled ×200, clamped ±100 |
+| `T:0` | Stop | Immediately stops both motors and returns to idle |
+| `T:1` | Speed control (normalized) | `L`/`R` nominally -0.5..+0.5 -> scaled x200, clamped +/-100 |
 | `T:11` | Direct PWM | `L`, `R` ∈ -255..+255 → scaled to ±100 internally |
-| `T:13` | ROS-style velocity | `X` (linear m/s), `Z` (angular rad/s) → converted to L/R |
+| `T:13` | ROS-style velocity | `linear` (m/s), `angular` (rad/s) -> converted to L/R |
 | `T:126` | IMU snapshot query | Responds immediately with T:1002 |
 | `T:127` | I2C device scan | Checks MPU-6050 (0x68) and INA219 (0x40) |
 | `T:128` | Full I2C bus sweep | Scans 0x01–0x7F, reports all ACKing addresses |

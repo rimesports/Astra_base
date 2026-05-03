@@ -37,7 +37,8 @@ SUBSYSTEM=="usb", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="374b", MODE="0666"
 # STM32 DFU Bootloader (Black Pill BOOT0 mode)
 SUBSYSTEM=="usb", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="df11", MODE="0666", GROUP="plugdev"
 # USB CDC serial (Black Pill firmware — becomes /dev/ttyACM0)
-SUBSYSTEM=="tty", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="5740", GROUP="dialout", MODE="0666"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="5740", ENV{ID_MM_DEVICE_IGNORE}="1", MODE="0666", GROUP="plugdev"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="5740", ENV{ID_MM_DEVICE_IGNORE}="1", GROUP="dialout", MODE="0666"
 EOF
 
 sudo udevadm control --reload-rules
@@ -48,6 +49,9 @@ sudo usermod -aG plugdev,dialout $USER
 ```
 
 After re-login, `pio run -t upload`, `dfu-util`, and serial monitor all work without sudo.
+
+The `ID_MM_DEVICE_IGNORE=1` flag keeps ModemManager from probing the firmware
+CDC interface as a modem candidate.
 
 ---
 
@@ -75,6 +79,17 @@ pio run -t upload
 
 Expected: build succeeds, ST-Link flashes, board resets with `reset run`, and the serial port appears as `/dev/ttyACM0`.
 
+If upload fails with `init mode failed` or `STLINK_JTAG_GET_IDCODE_ERROR`, verify
+the reset line before chasing firmware:
+
+```bash
+st-flash --connect-under-reset --freq=100K read /tmp/astra_probe.bin 0x08000000 4
+```
+
+`NRST is not connected` means ST-Link RST is not reaching the Black Pill NRST pin.
+The custom OpenOCD upload path depends on that wire so it can connect while the
+USB firmware is active.
+
 **Important:** the current repo `upload_command` in [platformio.ini](../platformio.ini) is Windows-specific:
 
 ```ini
@@ -84,7 +99,8 @@ upload_command = C:\Users\yegen\Robotics\STM32\stlink_flash.bat $SOURCE
 For Ubuntu, use one of these:
 
 1. Remove `upload_command` entirely and let PlatformIO use its default ST-Link/OpenOCD path.
-2. Replace it with a Linux shell wrapper that preserves the validated post-flash `reset run` behavior.
+2. Replace it with a Linux shell wrapper that preserves the validated post-flash
+   `resume` behavior and avoids re-sampling BOOT0 after flashing.
 
 Recommended Linux wrapper:
 
@@ -115,7 +131,7 @@ This matches the currently validated Windows workflow more closely than a plain 
 
 ---
 
-## 5. Verify DFU flash (no ST-Link)
+## 5. Verify DFU flash
 
 Enter DFU mode: hold BOOT0 → unplug/replug USB → release BOOT0.
 
@@ -123,6 +139,18 @@ Enter DFU mode: hold BOOT0 → unplug/replug USB → release BOOT0.
 dfu-util -l          # should list Device ID 0483:df11
 pio run -e dfu -t upload
 ```
+
+If ST-Link is connected and you want to avoid the BOOT0/NRST button sequence,
+use the helper script:
+
+```bash
+tools/enter_dfu_via_stlink.sh
+lsusb | grep -i df11
+pio run -e dfu --target upload
+```
+
+This jumps into the STM32 ROM bootloader via SWD, then flashes the same image
+through USB DFU.
 
 ---
 

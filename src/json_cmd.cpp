@@ -77,6 +77,22 @@ void json_cmd_process_line(const char *line) {
 
   switch (tcode) {
 
+  // ── T:0  Stop motors immediately ─────────────────────────────────────────
+  // {"T":0}
+  // Matches Waveshare cleanup convention and gives Jetson shutdown a safe,
+  // protocol-level stop command.
+  case CMD_STOP:
+    g_state.target_left = 0;
+    g_state.target_right = 0;
+    g_state.pwm_left = 0;
+    g_state.pwm_right = 0;
+    g_state.direct_pwm_mode = false;
+    g_state.command_received = false;
+    g_state.sys_state = SYS_IDLE;
+    motor_ctrl_set_speed(0, 0);
+    serial_send_line("{\"T\":0,\"ack\":true}");
+    break;
+
   // ── T:1  Normalized speed control ─────────────────────────────────────────
   // {"T":1,"L":-0.5..0.5,"R":-0.5..0.5}
   // Matches Wave Rover / ugv_rpi base_ctrl.py convention.

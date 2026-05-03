@@ -1,6 +1,6 @@
 # Astra Base — STM32 Robot Controller
 
-STM32F411CEU6 firmware for the Astra differential-drive robot base. Runs FreeRTOS with a JSON T-code command interface compatible with the Waveshare/ugv_rpi ecosystem, allowing the Jetson to control motors, read IMU and battery data, and receive periodic telemetry over USB CDC.
+STM32F411CEU6 firmware for the Astra differential-drive robot base. Runs FreeRTOS with a JSON T-code command interface, allowing the Jetson to control motors, read IMU and battery data, and receive periodic telemetry over USB CDC.
 
 ## Hardware
 
@@ -34,12 +34,14 @@ Three FreeRTOS tasks:
 | `serial_task` | 6 | Event-driven | UART/USB line reader → JSON T-code dispatcher |
 | `telemetry_task` | 2 (lowest) | Configurable | Periodic T:1001 chassis feedback to Jetson |
 
-Command interface uses JSON T-codes matching the Waveshare Wave Rover / ugv_rpi protocol — the Jetson `base_ctrl.py` requires no modification.
+Command interface uses newline-terminated JSON T-codes over USB CDC. The ROS 2 Jetson bridge should use `T:13` for `/cmd_vel` and `T:0` for shutdown stop.
 
 ## Key Commands
 
 ```json
+{"T":0}                       // Stop immediately
 {"T":1,"L":0.5,"R":0.5}      // Drive forward 50%
+{"T":13,"linear":0.3,"angular":0.0}  // ROS velocity command
 {"T":126}                     // IMU snapshot
 {"T":130,"cmd":1}             // Enable 200ms telemetry stream
 {"T":200}                     // System self-diagnostic

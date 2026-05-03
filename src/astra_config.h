@@ -108,7 +108,8 @@
 #define YAW_CORRECTION_GAIN     0.40f    // deg/s → PWM units
 #define YAW_STRAIGHT_THRESHOLD  15       // apply yaw correction when |target_L - target_R| < this
 
-// ─── Waveshare JSON T-codes (same as ESP32 — Jetson sees no difference) ───────
+// ─── JSON T-codes over USB CDC ───────────────────────────────────────────────
+#define CMD_STOP                0       // {"T":0} stop both motors immediately
 #define CMD_SPEED_CTRL          1       // {"T":1,"L":-0.5..0.5,"R":-0.5..0.5}
 #define CMD_PWM_INPUT           11      // {"T":11,"L":-255..255,"R":-255..255}
 #define CMD_ROS_CTRL            13      // {"T":13,"linear":x,"angular":z}
